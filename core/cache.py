@@ -5,6 +5,7 @@ Designed for single-instance deployments; shared volume needed for multi-instanc
 
 import json
 import os
+import time
 import fcntl
 import tempfile
 from pathlib import Path
@@ -13,8 +14,9 @@ from typing import Any, Optional
 from core.config import settings
 
 
-# Ensure cache directory exists
-Path(settings.CACHE_DIR).mkdir(parents=True, exist_ok=True)
+def _ensure_cache_dir() -> None:
+    """Ensure cache directory exists. Called on first use."""
+    Path(settings.CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
 
 def _cache_path(key: str) -> Path:
@@ -28,6 +30,7 @@ def get_cached_response(key: str) -> Optional[Any]:
     Read from cache if entry exists and is fresh (< TTL).
     Returns None on miss, expiry, or corruption.
     """
+    _ensure_cache_dir()
     cache_file = _cache_path(key)
     if not cache_file.exists():
         return None
@@ -46,9 +49,12 @@ def get_cached_response(key: str) -> Optional[Any]:
 
             # Check TTL
             mtime = os.path.getmtime(cache_file)
-            age_seconds = os.time() - mtime if hasattr(os, "time") else 0
+            age_seconds = time.time() - mtime
             if age_seconds > settings.CACHE_TTL_SECONDS:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN) if hasattr(fcntl, "LOCK_UN") else None
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                except (AttributeError, OSError):
+                    pass
                 cache_file.unlink(missing_ok=True)
                 return None
 
@@ -56,7 +62,10 @@ def get_cached_response(key: str) -> Optional[Any]:
                 data = json.load(f)
             except json.JSONDecodeError:
                 # Corrupted cache file
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN) if hasattr(fcntl, "LOCK_UN") else None
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                except (AttributeError, OSError):
+                    pass
                 cache_file.unlink(missing_ok=True)
                 return None
 
@@ -78,18 +87,19 @@ def set_cached_response(key: str, data: Any) -> bool:
     Returns True on success, False on failure.
     Never caches error payloads or empty values.
     """
+    _ensure_cache_dir()
     # Reject invalid data
     if data is None or (isinstance(data, dict) and not data):
         return False
 
     # Reject error payloads (never cache throttled/error responses)
     if isinstance(data, dict):
-        response_text = json.dumps(data).lower()
-        if any(marker in response_text for marker in ["note", "information", "error message"]):
+        # Check for explicit error keys rather than substring matching
+        if any(k in data for k in ("error", "error_message", "error_code", "detail")):
             return False
 
     cache_file = _cache_path(key)
-    temp_file = Path(tempfile.gettempdir()) / f"{cache_file.name}.tmp"
+    temp_file = cache_file.with_suffix(cache_file.suffix + ".tmp")
 
     try:
         # Write to temp file with exclusive lock

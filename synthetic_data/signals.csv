@@ -1,0 +1,5 @@
+customer_id,order_id,delivery_pincode,pincode_rto_rate,category_return_rate,complaint_score,social_sentiment,recent_events,account_age_days
+CUST_00001,ORD_0001,110001,0.15,0.35,0.20,0.40,None,100
+CUST_00002,ORD_0002,700002,0.50,0.18,0.85,-0.50,High RTO pincode|Negative social mentions,45
+CUST_00003,ORD_0003,560001,0.35,0.22,0.70,-0.40,None,10
+CUST_00004,ORD_0004,110002,0.22,0.28,0.10,0.10,None,120

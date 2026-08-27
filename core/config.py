@@ -21,8 +21,8 @@ class Settings(BaseSettings):
 
     # ── Model Configuration ──
     GEMINI_MODEL: str = Field(
-        default="gemini-2.5-flash",
-        description="Gemini model name (verified working: gemini-2.5-flash)",
+        default="gemini-1.5-flash",
+        description="Gemini model name (verified working: gemini-1.5-flash)",
     )
 
     # ── Cache Configuration ──
