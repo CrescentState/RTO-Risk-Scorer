@@ -28,16 +28,12 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "pydantic>=2.9.0",
     "pydantic-settings>=2.6.0",
-    "python-multipart>=0.0.12",
     "langgraph>=0.2.0",
-    "langchain-core>=0.3.0",
     "google-genai>=1.0.0",
     "httpx>=0.27.0",
     "pandas>=2.2.0",
     "numpy>=2.1.0",
-    "python-dotenv>=1.0.0",
-    "email-validator>=2.2.0",
-    "pymupdf>=1.28.2",
+    "networkx>=3.6.1",
 ]
 
 [project.optional-dependencies]
@@ -46,14 +42,9 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=5.0.0",
     "pytest-mock>=3.14.0",
-    "factory-boy>=3.3.0",
     "ruff>=0.6.0",
     "mypy>=1.11.0",
 ]
-
-[project.urls]
-Homepage = "https://github.com/yourusername/rto-risk-scorer"
-Repository = "https://github.com/yourusername/rto-risk-scorer"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agents", "core", "api", "synthetic_data", "evaluation"]
@@ -64,7 +55,6 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=5.0.0",
     "pytest-mock>=3.14.0",
-    "factory-boy>=3.3.0",
     "ruff>=0.6.0",
     "mypy>=1.11.0",
 ]

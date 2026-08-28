@@ -8,6 +8,8 @@ from langgraph.graph import StateGraph, END
 from core.state import SystemState, init_state
 from agents.profile_agent import run_profile_agent
 from agents.signal_agent import run_signal_agent
+from agents.risk_agent import run_risk_agent
+from agents.synthesis_agent import run_synthesis_agent
 
 
 # Module-level compiled pipeline (singleton)
@@ -24,11 +26,15 @@ def create_pipeline() -> StateGraph:
     # Register nodes
     workflow.add_node("profile_agent", run_profile_agent)
     workflow.add_node("signal_agent", run_signal_agent)
+    workflow.add_node("risk_agent", run_risk_agent)
+    workflow.add_node("synthesis_agent", run_synthesis_agent)
 
     # Sequential edges (each depends on previous agent's output)
     workflow.set_entry_point("profile_agent")
     workflow.add_edge("profile_agent", "signal_agent")
-    workflow.add_edge("signal_agent", END)
+    workflow.add_edge("signal_agent", "risk_agent")
+    workflow.add_edge("risk_agent", "synthesis_agent")
+    workflow.add_edge("synthesis_agent", END)
 
     return workflow.compile()
 

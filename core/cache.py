@@ -7,7 +7,6 @@ import json
 import os
 import time
 import fcntl
-import tempfile
 from pathlib import Path
 from typing import Any, Optional
 

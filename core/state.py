@@ -5,7 +5,6 @@ Uses TypedDict for LangGraph compatibility with operator.add reducer for errors.
 
 from typing import TypedDict, Annotated, List
 import operator
-import time
 
 
 class TransactionProfile(TypedDict, total=False):

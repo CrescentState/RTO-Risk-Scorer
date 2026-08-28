@@ -1,36 +1,22 @@
-from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.clients import close_clients
-# from core.orchestrator import run_pipeline_async  # unused
-# from api.routes import router as api_router  # empty, not yet implemented
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    yield
-    await close_clients()
-
+from api.routes import router
 
 app = FastAPI(
     title="RTO Risk Scorer",
     version="0.1.0",
-    description="Multi-agent AI pipeline for COD order RTO risk assessment",
-    lifespan=lifespan,
+    description="Multi-agent AI pipeline for COD order RTO risk assessment"
 )
 
+# CORS: Restricted for production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # TODO: Restrict in production
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
-# app.include_router(api_router, prefix="/api/v1")
-
-
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
+# Register routes
+app.include_router(router)
