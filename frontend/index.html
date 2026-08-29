@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RTO Risk Scorer Dashboard</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🛡️ RTO Risk Assessment Dashboard</h1>
+            <p>Real-time multi-agent deterministic risk scoring & decision engine</p>
+        </header>
+
+        <main class="grid">
+            <!-- Left Panel: Input Form -->
+            <section class="card form-card">
+                <h2>Analyze Order</h2>
+                <form id="risk-form">
+                    <div class="form-group">
+                        <label for="order_id">Order ID</label>
+                        <input type="text" id="order_id" name="order_id" value="ORD_123456" pattern="^ORD_[0-9]{6}$" required>
+                        <small>Format: ORD_XXXXXX</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="customer_id">Customer ID</label>
+                        <input type="text" id="customer_id" name="customer_id" value="CUST_12345" pattern="^CUST_[0-9]{5}$" required>
+                        <small>Format: CUST_XXXXX</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="order_value">Order Value (₹)</label>
+                        <input type="number" id="order_value" name="order_value" value="6500" min="1" step="0.01" required>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="category">Category</label>
+                            <select id="category" name="category" required>
+                                <option value="fashion" selected>Fashion</option>
+                                <option value="electronics">Electronics</option>
+                                <option value="home">Home</option>
+                                <option value="beauty">Beauty</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="payment_method">Payment Method</label>
+                            <select id="payment_method" name="payment_method" required>
+                                <option value="cod" selected>COD</option>
+                                <option value="upi">UPI</option>
+                                <option value="card">Card</option>
+                                <option value="wallet">Wallet</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="delivery_pincode">Delivery Pincode</label>
+                        <input type="text" id="delivery_pincode" name="delivery_pincode" value="560001" pattern="^[0-9]{6}$" required>
+                    </div>
+
+                    <button type="submit" id="submit-btn">Run Assessment</button>
+                </form>
+            </section>
+
+            <!-- Right Panel: Result Dashboard -->
+            <section class="card result-card" id="result-container">
+                <div id="placeholder-text" class="placeholder">
+                    <p>Enter order details and click <strong>Run Assessment</strong> to evaluate RTO risk.</p>
+                </div>
+
+                <div id="results-content" class="hidden">
+                    <!-- Top Metrics Bar -->
+                    <div class="metrics-grid">
+                        <div class="metric-box">
+                            <span class="metric-label">Risk Score</span>
+                            <div class="score-badge" id="risk-score">0.0</div>
+                        </div>
+
+                        <div class="metric-box">
+                            <span class="metric-label">Recommendation</span>
+                            <div class="badge" id="recommendation-badge">-</div>
+                        </div>
+                    </div>
+
+                    <!-- Confidence Bar -->
+                    <div class="confidence-container">
+                        <div class="confidence-header">
+                            <span>Pipeline Confidence</span>
+                            <span id="confidence-text">100%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="confidence-fill"></div>
+                        </div>
+                    </div>
+
+                    <!-- Expandable Brief Cards -->
+                    <div class="brief-sections">
+                        <details open>
+                            <summary>📋 Order Summary</summary>
+                            <p id="brief-order-summary"></p>
+                        </details>
+
+                        <details open>
+                            <summary>⚠️ Risk Assessment</summary>
+                            <p id="brief-risk-assessment"></p>
+                        </details>
+
+                        <details>
+                            <summary>🌐 Market & Geographic Context</summary>
+                            <p id="brief-market-context"></p>
+                        </details>
+
+                        <details open>
+                            <summary>💡 Key Concerns & Risk Factors</summary>
+                            <ul id="brief-concerns"></ul>
+                        </details>
+
+                        <details open>
+                            <summary>🛡️ Recommended Mitigations</summary>
+                            <ul id="brief-mitigations"></ul>
+                        </details>
+
+                        <details>
+                            <summary>🔍 Audit Trail & System Logs</summary>
+                            <div class="audit-info">
+                                <p><strong>Processing Time:</strong> <span id="processing-time">0</span> ms</p>
+                                <ul id="audit-logs"></ul>
+                            </div>
+                        </details>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/app.js" defer></script>
+</body>
+</html>

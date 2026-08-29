@@ -6,9 +6,10 @@ with ground truth labels for evaluation.
 
 import csv
 import random
-import numpy as np
 from pathlib import Path
 from typing import Literal
+
+import numpy as np
 
 # ── Configuration ──
 SEED = 42
@@ -96,7 +97,7 @@ def _generate_customer_profile(customer_id: str, customer_type: CustomerType) ->
         social_sentiment = round(random.uniform(-1.0, -0.40), 4)
 
     returns = int(total_orders * return_rate)
-    
+
     # Log-normal distribution for avg_order_value (clamped ₹500 - ₹25,000)
     # mean=6.5 → e^6.5 ≈ 665, mean=7.5 → e^7.5 ≈ 1800, mean=8.0 → e^8 ≈ 2980
     # Use mean=7.5 for realistic average around ₹1500-2000
@@ -219,7 +220,7 @@ def generate_dataset(
         cust_id = _generate_customer_id(c_idx)
         c_type = _generate_customer_type()
         customer = _generate_customer_profile(cust_id, c_type)
-        
+
         # Mark dataset split: 400 train, 100 held-out test set
         customer["split"] = "train" if c_idx <= 400 else "test"
         customers.append(customer)
@@ -229,7 +230,7 @@ def generate_dataset(
         for _ in range(num_orders):
             ord_id = _generate_order_id(order_counter)
             order_counter += 1
-            
+
             order = _generate_order(ord_id, customer)
             order["split"] = customer["split"]
             orders.append(order)
@@ -272,7 +273,7 @@ def generate_dataset(
 
     rto_count = sum(1 for o in orders if o["ground_truth"] == "rto")
     test_orders = sum(1 for o in orders if o["split"] == "test")
-    
+
     print(f"Generated {len(customers)} customers ({num_customers - 100} train / 100 test), {len(orders)} orders ({test_orders} test orders).")
     print(f"Overall RTO rate: {rto_count}/{len(orders)} ({rto_count/len(orders):.1%})")
     print(f"Files written to {output_path.resolve()}")
@@ -283,7 +284,7 @@ def generate_dataset(
 def load_customers(path: str = "synthetic_data/customers.csv") -> list[dict]:
     """Load customer profiles from CSV with proper type conversion."""
     import csv
-    with open(path, "r") as f:
+    with open(path) as f:
         reader = csv.DictReader(f)
         rows = []
         for row in reader:
@@ -306,7 +307,7 @@ def load_customers(path: str = "synthetic_data/customers.csv") -> list[dict]:
 def load_orders(path: str = "synthetic_data/orders.csv") -> list[dict]:
     """Load orders from CSV with proper type conversion."""
     import csv
-    with open(path, "r") as f:
+    with open(path) as f:
         reader = csv.DictReader(f)
         rows = []
         for row in reader:
@@ -329,7 +330,7 @@ def load_orders(path: str = "synthetic_data/orders.csv") -> list[dict]:
 def load_signals(path: str = "synthetic_data/signals.csv") -> list[dict]:
     """Load signals from CSV with proper type conversion."""
     import csv
-    with open(path, "r") as f:
+    with open(path) as f:
         reader = csv.DictReader(f)
         rows = []
         for row in reader:

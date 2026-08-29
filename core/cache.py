@@ -3,12 +3,13 @@ File-based cache with 24-hour TTL, atomic writes, and advisory file locking.
 Designed for single-instance deployments; shared volume needed for multi-instance.
 """
 
+import contextlib
+import fcntl
 import json
 import os
 import time
-import fcntl
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from core.config import settings
 
@@ -24,7 +25,7 @@ def _cache_path(key: str) -> Path:
     return Path(settings.CACHE_DIR) / f"{safe_key}.json"
 
 
-def get_cached_response(key: str) -> Optional[Any]:
+def get_cached_response(key: str) -> Any | None:
     """
     Read from cache if entry exists and is fresh (< TTL).
     Returns None on miss, expiry, or corruption.
@@ -35,12 +36,10 @@ def get_cached_response(key: str) -> Optional[Any]:
         return None
 
     try:
-        with open(cache_file, "r") as f:
+        with open(cache_file) as f:
             # Advisory shared lock (Unix only; no-op on Windows)
-            try:
+            with contextlib.suppress(AttributeError, OSError):
                 fcntl.flock(f.fileno(), fcntl.LOCK_SH)
-            except (AttributeError, OSError):
-                pass  # Windows or unsupported
 
             # Re-check existence after acquiring lock (TOCTOU mitigation)
             if not cache_file.exists():
@@ -50,10 +49,8 @@ def get_cached_response(key: str) -> Optional[Any]:
             mtime = os.path.getmtime(cache_file)
             age_seconds = time.time() - mtime
             if age_seconds > settings.CACHE_TTL_SECONDS:
-                try:
+                with contextlib.suppress(AttributeError, OSError):
                     fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-                except (AttributeError, OSError):
-                    pass
                 cache_file.unlink(missing_ok=True)
                 return None
 
@@ -61,18 +58,14 @@ def get_cached_response(key: str) -> Optional[Any]:
                 data = json.load(f)
             except json.JSONDecodeError:
                 # Corrupted cache file
-                try:
+                with contextlib.suppress(AttributeError, OSError):
                     fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-                except (AttributeError, OSError):
-                    pass
                 cache_file.unlink(missing_ok=True)
                 return None
 
             # Release lock
-            try:
+            with contextlib.suppress(AttributeError, OSError):
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-            except (AttributeError, OSError):
-                pass
 
             return data
 
@@ -92,10 +85,10 @@ def set_cached_response(key: str, data: Any) -> bool:
         return False
 
     # Reject error payloads (never cache throttled/error responses)
-    if isinstance(data, dict):
-        # Check for explicit error keys rather than substring matching
-        if any(k in data for k in ("error", "error_message", "error_code", "detail")):
-            return False
+    if isinstance(data, dict) and any(
+        k in data for k in ("error", "error_message", "error_code", "detail")
+    ):
+        return False
 
     cache_file = _cache_path(key)
     temp_file = cache_file.with_suffix(cache_file.suffix + ".tmp")
@@ -103,19 +96,15 @@ def set_cached_response(key: str, data: Any) -> bool:
     try:
         # Write to temp file with exclusive lock
         with open(temp_file, "w") as f:
-            try:
+            with contextlib.suppress(AttributeError, OSError):
                 fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            except (AttributeError, OSError):
-                pass
 
             json.dump(data, f)
             f.flush()
             os.fsync(f.fileno())
 
-            try:
+            with contextlib.suppress(AttributeError, OSError):
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-            except (AttributeError, OSError):
-                pass
 
         # Atomic rename
         os.replace(temp_file, cache_file)

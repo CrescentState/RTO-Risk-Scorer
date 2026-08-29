@@ -7,16 +7,17 @@ Uses rule registry with frozen dataclass definitions, IntFlag bitmask for trigge
 singleton Gemini client for narrative generation, and dispatch dict for message formatting.
 """
 
-from typing import Dict, Any, List, Callable, Optional
+from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum, IntFlag, auto
+from enum import IntFlag, StrEnum, auto
 from string import Template
+from typing import Any
 
-from core.config import settings
 from core.clients import get_gemini_client
+from core.config import settings
 
 
-class RuleName(str, Enum):
+class RuleName(StrEnum):
     """Type-safe rule identifiers for bitmask positions and dispatch."""
     SERIAL_RETURNER = "serial_returner"
     RETURN_VELOCITY_SPIKE = "return_velocity_spike"
@@ -47,10 +48,10 @@ class TriggeredRules(IntFlag):
 class RiskRule:
     """Immutable rule definition with condition, weight, and message template."""
     name: RuleName
-    condition: Callable[[Dict[str, Any], Dict[str, Any]], bool]
+    condition: Callable[[dict[str, Any], dict[str, Any]], bool]
     weight: float
     message_template: str
-    threshold_key: Optional[str] = None
+    threshold_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,49 +161,47 @@ THRESHOLDS = RiskThresholds(
 )
 
 
-def _evaluate_rules(transaction_profile: Dict[str, Any], signal_data: Dict[str, Any]) -> tuple[float, List[str], "TriggeredRules"]:
+def _evaluate_rules(transaction_profile: dict[str, Any], signal_data: dict[str, Any]) -> tuple[float, list[str], "TriggeredRules"]:
     """
     Evaluate all risk rules against transaction profile and signal data.
     Returns: (raw_score, triggered_factors, triggered_bitmask)
     Early exits when score reaches 100 (no need to evaluate remaining rules).
     """
-    from .risk_agent import TriggeredRules
 
     # Dispatch dict for message formatting - O(1) lookup
-    def _fmt_serial_returner(tp: Dict, sd: Dict) -> str:
+    def _fmt_serial_returner(tp: dict, sd: dict) -> str:
         rate_val = tp.get("return_rate")
         return f"Serial returner (rate: {rate_val:.0%})" if rate_val is not None else "Serial returner"
 
-    def _fmt_velocity_spike(tp: Dict, sd: Dict) -> str:
+    def _fmt_velocity_spike(tp: dict, sd: dict) -> str:
         count_val = tp.get("recent_returns_30d")
         return f"Return velocity spike ({count_val} in 30d)" if count_val is not None else "Return velocity spike"
 
-    def _fmt_high_value_new(tp: Dict, sd: Dict) -> str:
+    def _fmt_high_value_new(tp: dict, sd: dict) -> str:
         return "High-value new customer"
 
-    def _fmt_cod_high(tp: Dict, sd: Dict) -> str:
+    def _fmt_cod_high(tp: dict, sd: dict) -> str:
         return "COD high-value order"
 
-    def _fmt_high_rto_pincode(tp: Dict, sd: Dict) -> str:
+    def _fmt_high_rto_pincode(tp: dict, sd: dict) -> str:
         rate_val = sd.get("pincode_rto_rate")
         return f"High-RTO delivery pincode ({rate_val:.0%})" if rate_val is not None else "High-RTO delivery pincode"
 
-    def _fmt_high_complaint(tp: Dict, sd: Dict) -> str:
+    def _fmt_high_complaint(tp: dict, sd: dict) -> str:
         return "High complaint history"
 
-    def _fmt_negative_social(tp: Dict, sd: Dict) -> str:
+    def _fmt_negative_social(tp: dict, sd: dict) -> str:
         return "Negative social signals"
 
-    def _fmt_brand_new(tp: Dict, sd: Dict) -> str:
+    def _fmt_brand_new(tp: dict, sd: dict) -> str:
         return "Brand new account"
 
-    def _fmt_high_rto_category(tp: Dict, sd: Dict) -> str:
+    def _fmt_high_rto_category(tp: dict, sd: dict) -> str:
         rate_val = sd.get("category_return_rate")
         return f"High-RTO category ({rate_val:.0%})" if rate_val is not None else "High-RTO category"
 
     # Dispatch dict: O(1) formatter lookup by rule name
-    from enum import Enum
-    FORMATTERS = {
+    formatters = {
         "serial_returner": lambda tp, sd: f"Serial returner (rate: {tp.get('return_rate'):.0%})" if tp.get("return_rate") is not None else "Serial returner",
         "return_velocity_spike": lambda tp, sd: f"Return velocity spike ({tp.get('recent_returns_30d')} in 30d)" if tp.get("recent_returns_30d") is not None else "Return velocity spike",
         "high_value_new_customer": lambda tp, sd: "High-value new customer",
@@ -215,20 +214,9 @@ def _evaluate_rules(transaction_profile: Dict[str, Any], signal_data: Dict[str, 
     }
 
     # Map rule name to bitmask flag
-    RULE_BITMASK = {
-        "serial_returner": 1 << 0,
-        "return_velocity_spike": 1 << 1,
-        "high_value_new_customer": 1 << 2,
-        "cod_high_value": 1 << 3,
-        "high_rto_pincode": 1 << 4,
-        "high_complaint_history": 1 << 5,
-        "negative_social_signals": 1 << 6,
-        "brand_new_account": 1 << 7,
-        "high_rto_category": 1 << 8,
-    }
 
     raw_score = 0.0
-    triggered_factors: List[str] = []
+    triggered_factors: list[str] = []
     bitmask = 0
 
     for i, rule in enumerate(RISK_RULES):
@@ -241,7 +229,7 @@ def _evaluate_rules(transaction_profile: Dict[str, Any], signal_data: Dict[str, 
             bitmask |= (1 << i)
 
             # Use dispatch dict for O(1) formatting
-            formatter = FORMATTERS.get(rule.name.value)
+            formatter = formatters.get(rule.name.value)
             if formatter:
                 triggered_factors.append(formatter(transaction_profile, signal_data))
             else:
@@ -263,10 +251,10 @@ def _compute_recommendation(risk_score: float) -> str:
 def _generate_llm_narrative(
     risk_score: float,
     recommendation: str,
-    triggered_factors: List[str],
-    transaction_profile: Dict[str, Any],
-    signal_data: Dict[str, Any],
-    errors: List[str],
+    triggered_factors: list[str],
+    transaction_profile: dict[str, Any],
+    signal_data: dict[str, Any],
+    errors: list[str],
 ) -> str:
     """
     Generate LLM narrative using singleton Gemini client.
@@ -278,7 +266,7 @@ def _generate_llm_narrative(
         return DEFAULT_NARRATIVE
 
     # Sanitize inputs for prompt - only include safe summary fields
-    def _safe_summary(d: Dict) -> str:
+    def _safe_summary(d: dict) -> str:
         """Extract only safe, non-PII fields for prompt."""
         safe_keys = {"return_rate", "recent_returns_30d", "total_orders", "account_age_days",
                      "order_value", "category", "payment_method", "pincode_rto_rate",
@@ -322,7 +310,7 @@ def _generate_llm_narrative(
 DEFAULT_NARRATIVE = "Risk assessment based on transaction history and delivery signals."
 
 
-def run_risk_agent(state: Dict[str, Any]) -> Dict[str, Any]:
+def run_risk_agent(state: dict[str, Any]) -> dict[str, Any]:
     """
     Agent 3: Risk Scorer Agent
     Computes deterministic 0–100 risk score from transaction profile and signals.

@@ -7,12 +7,12 @@ Uses Pydantic for response validation, string.Template for safe prompt construct
 singleton Gemini client, and decision table for deterministic override.
 """
 
-from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from string import Template
+from typing import Any
 
-from core.config import settings
 from core.clients import get_gemini_client
+from core.config import settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,8 +21,8 @@ class ActionBrief:
     order_summary: str
     risk_assessment: str
     market_context: str
-    mitigation_suggestions: List[str]
-    key_concerns: List[str]
+    mitigation_suggestions: list[str]
+    key_concerns: list[str]
     recommended_action: str
 
 
@@ -38,7 +38,7 @@ FALLBACK_BRIEF = {
 
 
 # Deterministic override decision table: (confidence < 0.5) -> Manual Review
-def _compute_recommendation(state: Dict[str, Any]) -> str:
+def _compute_recommendation(state: dict[str, Any]) -> str:
     """
     Computes final recommendation with deterministic override logic.
     Low confidence (< MIN_CONFIDENCE_FOR_AUTO) always forces Manual Review.
@@ -53,7 +53,7 @@ def _compute_recommendation(state: Dict[str, Any]) -> str:
     return risk_data.get("recommendation", "Manual Review")
 
 
-def _safe_summary(d: Dict, safe_keys: Optional[set] = None) -> str:
+def _safe_summary(d: dict, safe_keys: set | None = None) -> str:
     """Extract only safe, non-PII fields for prompt."""
     if safe_keys is None:
         safe_keys = {"return_rate", "recent_returns_30d", "total_orders", "account_age_days",
@@ -63,11 +63,11 @@ def _safe_summary(d: Dict, safe_keys: Optional[set] = None) -> str:
     return "{" + ", ".join(f"{k}: {d[k]}" for k in safe_keys if k in d) + "}"
 
 
-def _build_prompt(state: Dict[str, Any], deterministic_action: str) -> str:
+def _build_prompt(state: dict[str, Any], deterministic_action: str) -> str:
     """Build safe prompt using Template to prevent injection."""
-    profile = _safe_summary(state.get("transaction_profile", {}))
-    signals = _safe_summary(state.get("signal_data", {}))
-    risk = _safe_summary(state.get("risk_data", {}))
+    _safe_summary(state.get("transaction_profile", {}))
+    _safe_summary(state.get("signal_data", {}))
+    _safe_summary(state.get("risk_data", {}))
     factors = state.get("risk_data", {}).get("risk_factors", [])
 
     prompt_template = Template(
@@ -106,7 +106,7 @@ def _build_prompt(state: Dict[str, Any], deterministic_action: str) -> str:
     )
 
 
-def _parse_llm_response(response_text: str, fallback: Dict) -> Dict:
+def _parse_llm_response(response_text: str, fallback: dict) -> dict:
     """Parse and validate LLM JSON response with fallbacks."""
     import json
 
@@ -153,7 +153,7 @@ def _parse_llm_response(response_text: str, fallback: Dict) -> Dict:
     return result
 
 
-def run_synthesis_agent(state: Dict[str, Any]) -> Dict[str, Any]:
+def run_synthesis_agent(state: dict[str, Any]) -> dict[str, Any]:
     """
     Agent 4: Synthesis Agent
     Generates a structured merchant-facing action brief combining all prior agent outputs.

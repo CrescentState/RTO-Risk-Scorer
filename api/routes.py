@@ -1,5 +1,6 @@
 import time
-from typing import List, Dict, Any
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -24,13 +25,13 @@ class AnalyzeResponse(BaseModel):
     risk_score: float
     recommendation: str
     confidence_score: float
-    action_brief: Dict[str, Any]
-    audit_trail: List[str]
+    action_brief: dict[str, Any]
+    audit_trail: list[str]
     processing_time_ms: int
 
 
 @router.get("/health", status_code=status.HTTP_200_OK)
-async def health_check() -> Dict[str, str]:
+async def health_check() -> dict[str, str]:
     return {"status": "healthy", "service": "RTO Risk Scorer"}
 
 
@@ -51,7 +52,7 @@ async def analyze_order(payload: AnalyzeRequest) -> AnalyzeResponse:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Pipeline execution error: {str(e)}",
-        )
+        ) from e
 
     end_time = time.perf_counter()
     processing_time_ms = int((end_time - start_time) * 1000)
@@ -72,7 +73,7 @@ async def analyze_order(payload: AnalyzeRequest) -> AnalyzeResponse:
 
 
 @router.get("/api/v1/metrics")
-async def get_metrics() -> Dict[str, Any]:
+async def get_metrics() -> dict[str, Any]:
     metrics_data = compute_benchmark_metrics()
     return {
         "precision": metrics_data["precision"],
@@ -85,6 +86,6 @@ async def get_metrics() -> Dict[str, Any]:
 
 
 @router.get("/api/v1/benchmark")
-async def get_benchmark_report() -> Dict[str, Any]:
+async def get_benchmark_report() -> dict[str, Any]:
     from evaluation.benchmark import run_benchmark
     return run_benchmark()

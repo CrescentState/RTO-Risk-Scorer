@@ -3,8 +3,8 @@ SystemState definitions for the RTO Risk Scorer pipeline.
 Uses TypedDict for LangGraph compatibility with operator.add reducer for errors.
 """
 
-from typing import TypedDict, Annotated, List
 import operator
+from typing import Annotated, TypedDict
 
 
 class TransactionProfile(TypedDict, total=False):
@@ -29,7 +29,7 @@ class SignalData(TypedDict, total=False):
     category_return_rate: float
     complaint_score: float
     social_sentiment: float
-    recent_events: List[str]
+    recent_events: list[str]
     account_age_days: int
     signals_available: bool
 
@@ -37,7 +37,7 @@ class SignalData(TypedDict, total=False):
 class RiskData(TypedDict, total=False):
     """Output from Agent 3: Risk Scorer Agent."""
     risk_score: float
-    risk_factors: List[str]
+    risk_factors: list[str]
     risk_narrative: str
     recommendation: str
 
@@ -47,8 +47,8 @@ class ActionBrief(TypedDict, total=False):
     order_summary: str
     risk_assessment: str
     market_context: str
-    mitigation_suggestions: List[str]
-    key_concerns: List[str]
+    mitigation_suggestions: list[str]
+    key_concerns: list[str]
     recommended_action: str
 
 
@@ -80,7 +80,7 @@ class SystemState(TypedDict, total=False):
 
     # Cross-cutting
     confidence_score: float
-    errors: Annotated[List[str], operator.add]
+    errors: Annotated[list[str], operator.add]
 
 
 def init_state(

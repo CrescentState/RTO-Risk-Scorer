@@ -1,8 +1,9 @@
 import os
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from core.orchestrator import run_pipeline, get_pipeline
+import pytest
+
+from core.orchestrator import get_pipeline, run_pipeline
 from synthetic_data.generator import generate_dataset, load_customers
 
 
@@ -40,9 +41,7 @@ def base_state(test_customer):
 
 def run_pipeline_with_state(state: dict) -> dict:
     """Helper to run pipeline with a custom initial state."""
-    from core.state import init_state
-    from core.orchestrator import get_pipeline
-    
+
     pipeline = get_pipeline()
     return pipeline.invoke(state)
 
@@ -71,12 +70,12 @@ def test_pipeline_high_risk_auto_reject():
     generate_dataset(num_customers=200)
     customers = load_customers()
     fraudsters = [c for c in customers if c["customer_type"] == "fraudster"]
-    
+
     if not fraudsters:
         pytest.skip("No fraudster in generated data")
-    
+
     fraudster = fraudsters[0]
-    
+
     final_state = run_pipeline(
         order_id="ORD_999999",
         customer_id=fraudster["customer_id"],
@@ -96,8 +95,7 @@ def test_pipeline_high_risk_auto_reject():
 def test_pipeline_low_confidence_override(base_state):
     # Use pipeline directly with custom initial state to test low confidence override
     from core.state import init_state
-    from core.orchestrator import get_pipeline
-    
+
     pipeline = get_pipeline()
     initial_state = init_state(
         order_id=base_state["order_id"],
@@ -108,7 +106,7 @@ def test_pipeline_low_confidence_override(base_state):
         delivery_pincode=base_state["delivery_pincode"],
     )
     initial_state["confidence_score"] = 0.40
-    
+
     final_state = pipeline.invoke(initial_state)
 
     # Even if risk score is 0.0 (Auto-Approve), action_brief MUST override to Manual Review
@@ -139,20 +137,22 @@ def test_pipeline_llm_hallucinated_label_correction(base_state):
     mock_llm_response = MagicMock()
     mock_llm_response.text = '{"recommended_action": "APPROVE_IMMEDIATELY_NO_CHECKS"}'
 
-    with patch.dict(os.environ, {"GEMINI_API_KEY": "fake_key"}):
-        with patch("google.genai.Client") as mock_client:
-            mock_client.return_value.models.generate_content.return_value = mock_llm_response
-            final_state = run_pipeline(
-                order_id=base_state["order_id"],
-                customer_id=base_state["customer_id"],
-                order_value=base_state["order_value"],
-                payment_method=base_state["payment_method"],
-                category=base_state["category"],
-                delivery_pincode=base_state["delivery_pincode"],
-            )
+    with (
+        patch.dict(os.environ, {"GEMINI_API_KEY": "fake_key"}),
+        patch("google.genai.Client") as mock_client,
+    ):
+        mock_client.return_value.models.generate_content.return_value = mock_llm_response
+        final_state = run_pipeline(
+            order_id=base_state["order_id"],
+            customer_id=base_state["customer_id"],
+            order_value=base_state["order_value"],
+            payment_method=base_state["payment_method"],
+            category=base_state["category"],
+            delivery_pincode=base_state["delivery_pincode"],
+        )
 
-            # Must overwrite hallucination with deterministic recommendation
-            assert final_state["action_brief"]["recommended_action"] in ["Auto-Approve", "Manual Review", "Auto-Reject"]
+        # Must overwrite hallucination with deterministic recommendation
+        assert final_state["action_brief"]["recommended_action"] in ["Auto-Approve", "Manual Review", "Auto-Reject"]
 
 
 # 7. None-Safety on Missing Data Agent Profiles
@@ -215,9 +215,9 @@ def test_pipeline_cumulative_confidence_docking(base_state):
     # Patch the orchestrator's reference to the profile agent
     with patch("core.orchestrator.run_profile_agent", side_effect=mock_profile_agent):
         # Use pipeline directly with custom initial state to preserve confidence_score
-        from core.state import init_state
         from core.orchestrator import get_pipeline
-        
+        from core.state import init_state
+
         pipeline = get_pipeline()
         initial_state = init_state(
             order_id=base_state["order_id"],
@@ -228,7 +228,7 @@ def test_pipeline_cumulative_confidence_docking(base_state):
             delivery_pincode=base_state["delivery_pincode"],
         )
         initial_state["confidence_score"] = 0.80
-        
+
         final_state = pipeline.invoke(initial_state)
 
         # 0.80 - 0.40 = 0.40
@@ -256,24 +256,25 @@ def test_pipeline_boundary_rule_triggers(base_state):
 
 # 11. LLM API Failure Recovery to Fallback Narrative
 def test_pipeline_llm_failure_recovery(base_state):
-    with patch.dict(os.environ, {"GEMINI_API_KEY": "fake_key"}):
-        # Patch the synthesis agent's reference to get_gemini_client
-        with patch("agents.synthesis_agent.get_gemini_client") as mock_get_client:
-            mock_client = MagicMock()
-            mock_client.models.generate_content.side_effect = Exception("API connection timeout")
-            mock_get_client.return_value = mock_client
-            
-            final_state = run_pipeline(
-                order_id=base_state["order_id"],
-                customer_id=base_state["customer_id"],
-                order_value=base_state["order_value"],
-                payment_method=base_state["payment_method"],
-                category=base_state["category"],
-                delivery_pincode=base_state["delivery_pincode"],
-            )
+    with (
+        patch.dict(os.environ, {"GEMINI_API_KEY": "fake_key"}),
+        patch("agents.synthesis_agent.get_gemini_client") as mock_get_client,
+    ):
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = Exception("API connection timeout")
+        mock_get_client.return_value = mock_client
 
-            assert "Order analysis pending" in final_state["action_brief"]["order_summary"]
-            assert any("Synthesis LLM error" in err for err in final_state["errors"])
+        final_state = run_pipeline(
+            order_id=base_state["order_id"],
+            customer_id=base_state["customer_id"],
+            order_value=base_state["order_value"],
+            payment_method=base_state["payment_method"],
+            category=base_state["category"],
+            delivery_pincode=base_state["delivery_pincode"],
+        )
+
+        assert "Order analysis pending" in final_state["action_brief"]["order_summary"]
+        assert any("Synthesis LLM error" in err for err in final_state["errors"])
 
 
 # 12. Score Clamping at 100.0 Boundary in Full Graph
@@ -301,23 +302,25 @@ def test_pipeline_score_clamping(base_state):
         return state
 
     # Patch the orchestrator's references and use pipeline directly
-    with patch("core.orchestrator.run_profile_agent", side_effect=mock_profile_agent):
-        with patch("core.orchestrator.run_signal_agent", side_effect=mock_signal_agent):
-            from core.state import init_state
-            from core.orchestrator import get_pipeline
-            
-            pipeline = get_pipeline()
-            initial_state = init_state(
-                order_id="ORD_TEST",
-                customer_id=base_state["customer_id"],
-                order_value=base_state["order_value"],
-                payment_method=base_state["payment_method"],
-                category=base_state["category"],
-                delivery_pincode=base_state["delivery_pincode"],
-            )
-            
-            final_state = pipeline.invoke(initial_state)
+    with (
+        patch("core.orchestrator.run_profile_agent", side_effect=mock_profile_agent),
+        patch("core.orchestrator.run_signal_agent", side_effect=mock_signal_agent),
+    ):
+        from core.orchestrator import get_pipeline
+        from core.state import init_state
 
-            # Total sum exceeds 100.0, clamped strictly to 100.0
-            assert final_state["risk_data"]["risk_score"] == 100.0
-            assert final_state["action_brief"]["recommended_action"] == "Auto-Reject"
+        pipeline = get_pipeline()
+        initial_state = init_state(
+            order_id="ORD_TEST",
+            customer_id=base_state["customer_id"],
+            order_value=base_state["order_value"],
+            payment_method=base_state["payment_method"],
+            category=base_state["category"],
+            delivery_pincode=base_state["delivery_pincode"],
+        )
+
+        final_state = pipeline.invoke(initial_state)
+
+        # Total sum exceeds 100.0, clamped strictly to 100.0
+        assert final_state["risk_data"]["risk_score"] == 100.0
+        assert final_state["action_brief"]["recommended_action"] == "Auto-Reject"

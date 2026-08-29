@@ -1,7 +1,9 @@
 import os
-import pandas as pd
-from typing import Dict, Any, Optional
 from functools import lru_cache
+from typing import Any
+
+import pandas as pd
+
 from core.cache import get_cached_response, set_cached_response
 from core.config import settings
 
@@ -17,9 +19,9 @@ REQUIRED_PROFILE_FIELDS = {
 }
 
 
-def run_profile_agent(state: Dict[str, Any]) -> Dict[str, Any]:
+def run_profile_agent(state: dict[str, Any]) -> dict[str, Any]:
     customer_id = state.get("customer_id")
-    order_id = state.get("order_id")
+    state.get("order_id")
     order_value = state.get("order_value")
     category = state.get("category")
     payment_method = state.get("payment_method")
@@ -144,14 +146,14 @@ def _clear_profile_cache() -> None:
     _compute_recent_returns_30d.cache_clear()
 
 
-def _compute_pincode_rto_rate(orders_df: pd.DataFrame, delivery_pincode: str) -> Optional[float]:
+def _compute_pincode_rto_rate(orders_df: pd.DataFrame, delivery_pincode: str) -> float | None:
     """Compute pincode RTO rate from orders DataFrame. Returns None if not found."""
     if orders_df.empty or "delivery_pincode" not in orders_df.columns or "ground_truth" not in orders_df.columns:
         return None
-    
+
     pincode_str = str(delivery_pincode)
     pincode_int = int(delivery_pincode) if str(delivery_pincode).isdigit() else None
-    
+
     if pincode_int is not None:
         pincode_orders = orders_df[
             (orders_df["delivery_pincode"].astype(str) == pincode_str) |
@@ -159,10 +161,10 @@ def _compute_pincode_rto_rate(orders_df: pd.DataFrame, delivery_pincode: str) ->
         ]
     else:
         pincode_orders = orders_df[orders_df["delivery_pincode"].astype(str) == pincode_str]
-    
+
     if pincode_orders.empty:
         return None
-    
+
     rto_count = (pincode_orders["ground_truth"] == "rto").sum()
     return float(rto_count / len(pincode_orders))
 
@@ -171,11 +173,11 @@ def _compute_recent_returns_30d(orders_df: pd.DataFrame, customer_id: str) -> in
     """Compute sum of recent_returns_30d for a customer."""
     if orders_df.empty or "customer_id" not in orders_df.columns:
         return 0
-    
+
     cust_orders = orders_df[orders_df["customer_id"] == customer_id]
     if cust_orders.empty:
         return 0
-    
+
     return int(cust_orders["recent_returns_30d"].sum())
 
 
@@ -187,7 +189,7 @@ def _safe_get(row: pd.Series, col: str, default=None):
     return val if pd.notna(val) else default
 
 
-def _is_valid_cached_profile(data: Dict) -> bool:
+def _is_valid_cached_profile(data: dict) -> bool:
     """Validate cached profile data has all required fields with valid types."""
     if not isinstance(data, dict):
         return False
@@ -212,9 +214,7 @@ def _is_valid_cached_profile(data: Dict) -> bool:
     # Validate ranges
     if not (0.0 <= data["return_rate"] <= 1.0):
         return False
-    if data["total_orders"] < 0:
-        return False
-    return True
+    return not data["total_orders"] < 0
 
 
 def _build_default_profile(order_value, category, payment_method, delivery_pincode, data_available=False):

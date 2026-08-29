@@ -1,11 +1,12 @@
 import os
-import pytest
-import pandas as pd
 from unittest.mock import patch
 
+import pandas as pd
+import pytest
+
 from agents.profile_agent import run_profile_agent
+from core.cache import clear_cache, get_cached_response, set_cached_response
 from synthetic_data.generator import generate_dataset, load_customers
-from core.cache import set_cached_response, get_cached_response, clear_cache
 
 # ---------------------------------------------------------------------------
 # Test Setup & Fixtures
@@ -49,7 +50,7 @@ def base_state(test_customer_id):
 
 def test_profile_agent_success(base_state):
     res = run_profile_agent(base_state)
-    
+
     profile = res["transaction_profile"]
     assert profile["data_available"] is True
     assert res["confidence_score"] >= 0.95  # May be docked 0.05 for missing pincode_rto_rate
@@ -61,7 +62,7 @@ def test_profile_agent_success(base_state):
 def test_profile_agent_derived_fields(base_state):
     res = run_profile_agent(base_state)
     profile = res["transaction_profile"]
-    
+
     assert "total_orders" in profile
     assert "return_rate" in profile
     assert "avg_order_value" in profile
@@ -101,7 +102,7 @@ def test_profile_agent_cache_hit(base_state):
 def test_profile_agent_cache_miss_queries_db(base_state):
     base_state["customer_id"] = "CUST_00002"
     cache_key = "CUST_00002_profile"
-    
+
     clear_cache()
     res = run_profile_agent(base_state)
     assert res["transaction_profile"]["data_available"] is True
@@ -114,7 +115,7 @@ def test_profile_agent_cache_miss_queries_db(base_state):
 
 def test_profile_agent_invalid_customer_id(base_state):
     base_state["customer_id"] = "CUST_99999"  # Non-existent
-    
+
     res = run_profile_agent(base_state)
     assert res["transaction_profile"]["data_available"] is False
     assert res["confidence_score"] == 0.6  # 1.0 - 0.4
@@ -133,7 +134,7 @@ def test_profile_agent_missing_critical_order_value():
         "confidence_score": 1.0,
         "errors": []
     }
-    
+
     res = run_profile_agent(state)
     assert res["transaction_profile"]["data_available"] is False
     assert res["confidence_score"] == 0.6  # Docked 0.4 for missing critical field
@@ -143,12 +144,11 @@ def test_profile_agent_missing_critical_order_value():
 # ---------------------------------------------------------------------------
 
 def test_profile_agent_missing_secondary_pincode_rate(base_state):
-    from agents.profile_agent import _load_customers_df, _load_orders_df
-    
+
     # Mock the internal cached functions
     with patch("agents.profile_agent._load_customers_df") as mock_cust, \
          patch("agents.profile_agent._load_orders_df") as mock_orders:
-        
+
         cust_df = pd.DataFrame([{
             "customer_id": base_state["customer_id"],
             "total_orders": 10,
@@ -167,11 +167,10 @@ def test_profile_agent_missing_secondary_pincode_rate(base_state):
         assert res["transaction_profile"]["pincode_rto_rate"] == 0.0
 
 def test_profile_agent_missing_secondary_account_age(base_state):
-    from agents.profile_agent import _load_customers_df, _load_orders_df
-    
+
     with patch("agents.profile_agent._load_customers_df") as mock_cust, \
          patch("agents.profile_agent._load_orders_df") as mock_orders:
-        
+
         cust_df = pd.DataFrame([{
             "customer_id": base_state["customer_id"],
             "total_orders": 10,
@@ -194,12 +193,11 @@ def test_profile_agent_missing_secondary_account_age(base_state):
 # ---------------------------------------------------------------------------
 
 def test_profile_agent_db_exception_fallback(base_state):
-    from agents.profile_agent import _load_customers_df
     base_state["customer_id"] = "CUST_NOCACHE"
-    
+
     with patch("agents.profile_agent._load_customers_df", side_effect=Exception("Database connection timeout")):
         res = run_profile_agent(base_state)
-        
+
         assert res["transaction_profile"]["data_available"] is False
         assert res["confidence_score"] == 0.7  # 1.0 - 0.3
         assert any("Database error" in err for err in res["errors"])
@@ -211,7 +209,7 @@ def test_profile_agent_db_exception_fallback(base_state):
 def test_profile_agent_confidence_clamping_low(base_state):
     base_state["confidence_score"] = 0.2
     base_state["customer_id"] = "CUST_99999"  # Missing customer (-0.4)
-    
+
     res = run_profile_agent(base_state)
     # 0.2 - 0.4 = -0.2 -> clamped to 0.0
     assert res["confidence_score"] == 0.0
@@ -228,7 +226,7 @@ def test_profile_agent_confidence_clamping_high():
         "confidence_score": 1.5,  # Malformed incoming state > 1.0
         "errors": []
     }
-    
+
     res = run_profile_agent(state)
     # Should be clamped to 1.0
     assert res["confidence_score"] == 1.0
@@ -240,7 +238,7 @@ def test_profile_agent_confidence_clamping_high():
 def test_profile_agent_error_accumulation(base_state):
     base_state["errors"] = ["Prior agent error: Validation warning"]
     base_state["customer_id"] = "CUST_99999"
-    
+
     res = run_profile_agent(base_state)
     assert len(res["errors"]) == 2
     assert res["errors"][0] == "Prior agent error: Validation warning"
@@ -261,7 +259,7 @@ def test_profile_agent_none_inputs_safety():
         "confidence_score": 1.0,
         "errors": []
     }
-    
+
     # Must not crash, should return safely degraded profile
     res = run_profile_agent(empty_state)
     assert res["transaction_profile"]["data_available"] is False

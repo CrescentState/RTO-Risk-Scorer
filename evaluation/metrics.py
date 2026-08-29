@@ -1,12 +1,12 @@
-from typing import Dict, Any, List
+from typing import Any
 
 # Held-out dataset representation for benchmark evaluation
 # Each tuple: (order_id, predicted_risk_score, actual_is_rto)
-HELD_OUT_DATASET: List[Dict[str, Any]] = [
+HELD_OUT_DATASET: list[dict[str, Any]] = [
     # Mock held-out set simulating 100 benchmark outcomes
 ]
 
-def compute_benchmark_metrics(dataset: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+def compute_benchmark_metrics(dataset: list[dict[str, Any]] = None) -> dict[str, Any]:
     """
     Computes precision, recall, F1 score, FPR, auto-approval rate,
     and estimated monetary savings from RTO prevention.
@@ -18,7 +18,7 @@ def compute_benchmark_metrics(dataset: List[Dict[str, Any]] = None) -> Dict[str,
     fp = 0  # Flagged as RTO + Actually legit
     fn = 0  # Not flagged (<= 25.0 Auto-Approve) + Actually RTO
     tn = 0  # Not flagged + Actually legit
-    
+
     auto_approved_count = 0
     total_orders = len(dataset)
 
@@ -41,9 +41,9 @@ def compute_benchmark_metrics(dataset: List[Dict[str, Any]] = None) -> Dict[str,
     for item in dataset:
         score = item["risk_score"]
         actual_rto = item["actual_is_rto"]
-        
+
         is_flagged = score > 25.0  # Non-auto-approved orders (Manual Review / Auto-Reject)
-        
+
         if score <= 25.0:
             auto_approved_count += 1
 

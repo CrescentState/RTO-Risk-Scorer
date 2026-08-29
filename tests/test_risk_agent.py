@@ -1,9 +1,10 @@
 import os
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 from agents.risk_agent import run_risk_agent
-from core.clients import _gemini_client as gemini_client_module
+
 
 @pytest.fixture
 def base_state():
@@ -148,7 +149,7 @@ def test_risk_agent_score_clamping_and_recommendation(base_state):
     base_state["transaction_profile"]["total_orders"] = 1         # +20 (High value new)
     base_state["signal_data"]["pincode_rto_rate"] = 0.50          # +15
     base_state["signal_data"]["complaint_score"] = 0.90           # +15
-    
+
     # Total sum = 30 + 25 + 15 + 20 + 15 + 15 = 120 -> Clamped to 100.0
     res = run_risk_agent(base_state)
     assert res["risk_data"]["risk_score"] == 100.0
@@ -215,7 +216,7 @@ def test_risk_agent_llm_narrative_success(base_state):
     base_state["transaction_profile"]["return_rate"] = 0.60
     mock_response = MagicMock()
     mock_response.text = "Customer exhibits a high return rate. Caution is advised for high-value orders."
-    
+
     with patch.dict(os.environ, {"GEMINI_API_KEY": "fake_key"}):
         # Mock the singleton client getter
         import core.clients

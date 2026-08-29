@@ -5,8 +5,8 @@ Initialized once at import time and reused across all agents.
 
 import httpx
 from google import genai
-from core.config import settings
 
+from core.config import settings
 
 # ── HTTP Client ──
 # Shared async client for all HTTP requests (RSS, external APIs)

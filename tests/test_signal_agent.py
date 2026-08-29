@@ -1,10 +1,11 @@
-import os
 import csv
-import pytest
+import os
 from unittest.mock import patch
 
+import pytest
+
 from agents.signal_agent import run_signal_agent
-from core.cache import set_cached_response, get_cached_response, clear_cache
+from core.cache import clear_cache, get_cached_response, set_cached_response
 
 TEST_SIGNALS_CSV = "synthetic_data/signals.csv"
 
@@ -13,7 +14,7 @@ def setup_teardown_csv():
     """Setup a controlled synthetic signal database for reproducible unit testing."""
     os.makedirs("synthetic_data", exist_ok=True)
     clear_cache()
-    
+
     headers = [
         "customer_id", "order_id", "delivery_pincode", "pincode_rto_rate",
         "category_return_rate", "complaint_score", "social_sentiment",
@@ -25,12 +26,12 @@ def setup_teardown_csv():
         ["CUST_00003", "ORD_0003", "560001", "0.35", "0.22", "0.70", "-0.40", "None", "10"],
         ["CUST_00004", "ORD_0004", "110002", "0.22", "0.28", "0.10", "0.10", "None", "120"],
     ]
-    
+
     with open(TEST_SIGNALS_CSV, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(headers)
         writer.writerows(rows)
-        
+
     yield
 
 @pytest.fixture
@@ -155,11 +156,11 @@ def test_signal_agent_no_mismatch_older_profile(base_state):
 
 # 13. Database Read Error / Timeout Handling
 def test_signal_agent_db_timeout(base_state):
-    from agents.signal_agent import _query_signals_db, _clear_signal_cache
+    from agents.signal_agent import _clear_signal_cache
     _clear_signal_cache()
     from core.cache import clear_cache
     clear_cache()
-    with patch("agents.signal_agent._query_signals_db", side_effect=IOError("Disk Timeout")):
+    with patch("agents.signal_agent._query_signals_db", side_effect=OSError("Disk Timeout")):
         res = run_signal_agent(base_state)
         assert res["signal_data"]["signals_available"] is False
         assert res["confidence_score"] == 0.9
@@ -167,7 +168,6 @@ def test_signal_agent_db_timeout(base_state):
 
 # 14. Schema Bounds Clamping & Retry Test
 def test_signal_agent_schema_clamping(base_state):
-    from agents.signal_agent import _query_signals_db
     with patch("agents.signal_agent._query_signals_db") as mock_query:
         mock_query.return_value = ({
             "customer_id": "CUST_00001", "delivery_pincode": "110001",
@@ -181,11 +181,10 @@ def test_signal_agent_schema_clamping(base_state):
 
 # 15. Cumulative Confidence Docking
 def test_signal_agent_cumulative_docking(base_state):
-    from agents.signal_agent import _query_signals_db
     base_state["customer_id"] = "CUST_00002"  # Hostile signals (-0.05)
     base_state["delivery_pincode"] = "700002"
     base_state["transaction_profile"]["account_age_days"] = 3  # Mismatch (-0.1)
-    
+
     with patch("agents.signal_agent._query_signals_db") as mock_query:
         mock_query.return_value = ({
             "customer_id": "CUST_00002", "delivery_pincode": "700002",
@@ -193,7 +192,7 @@ def test_signal_agent_cumulative_docking(base_state):
             "complaint_score": "0.85", "social_sentiment": "-0.50",
             "recent_events": "High RTO pincode|Negative social mentions", "account_age_days": "45"
         }, None)
-        
+
         res = run_signal_agent(base_state)
         # 1.0 - 0.05 (hostile) - 0.1 (mismatch) = 0.85
         assert res["confidence_score"] == 0.85
@@ -229,7 +228,6 @@ def test_signal_agent_none_profile_account_age(base_state):
 
 # 20. Corrupted Numeric Data Handling
 def test_signal_agent_corrupted_numeric_data(base_state):
-    from agents.signal_agent import _query_signals_db
     with patch("agents.signal_agent._query_signals_db") as mock_query:
         mock_query.return_value = ({
             "customer_id": "CUST_00001", "delivery_pincode": "110001",
@@ -242,4 +240,3 @@ def test_signal_agent_corrupted_numeric_data(base_state):
         assert res["signal_data"]["pincode_rto_rate"] == 0.35
         assert res["signal_data"]["complaint_score"] == 0.0
         assert res["signal_data"]["social_sentiment"] == 0.0
-        

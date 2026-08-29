@@ -1,5 +1,5 @@
-import pytest
 from evaluation.metrics import compute_benchmark_metrics
+
 
 # 1. Verification of default mock benchmark report output
 def test_compute_benchmark_metrics_default():

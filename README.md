@@ -26,6 +26,16 @@ RTO Risk Scorer evaluates every COD order at checkout-time using a **determinist
 
 
 
+## ✨ Recent Updates (v0.1.1)
+
+- **Frontend Dashboard**: Built-in web UI at `/` (served by FastAPI)
+- **Model Upgrade**: Switched to `gemini-2.0-flash-lite` for faster LLM responses (~300-600ms)
+- **Static File Serving**: Frontend assets served at `/static/`
+- **All 81 tests passing** with ruff linting clean
+- **LangGraph 1.2+ compatibility** fixed (removed deprecated `retry_policy`)
+
+
+
 ## Architecture
 
 ```
@@ -113,10 +123,21 @@ Copy `.env.example` to `.env` and configure:
 
 ```env
 GEMINI_API_KEY=your_gemini_key_here
-GEMINI_MODEL=gemini-1.5-flash
-USE_MOCK_DATA=false
+GEMINI_MODEL=gemini-3.6-flash
 CACHE_TTL_SECONDS=86400
 ```
+
+**Recommended Models** (by speed/cost):
+
+
+| Model                   | Speed     | Cost   | Best For                 |
+| ----------------------- | --------- | ------ | ------------------------ |
+| `gemini-2.0-flash-lite` | ⚡ Fastest | Lowest | Production (recommended) |
+| `gemini-1.5-flash-8b`   | Fast      | Low    | High volume              |
+| `gemini-1.5-pro`        | Medium    | Higher | Complex narratives       |
+
+
+> **Note**: `gemini-1.5-flash` is deprecated and returns 404. Use `gemini-2.0-flash-lite` instead.
 
 
 
@@ -139,7 +160,9 @@ uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
 docker-compose up --build
 ```
 
+**Web Dashboard**: Open [http://localhost:8000](http://localhost:8000) in browser after starting server.
 
+**API Docs**: Swagger UI at [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ### Run Benchmark
 
@@ -185,6 +208,159 @@ Content-Type: application/json
 
 
 
+### Valid Test Customer IDs (from synthetic data)
+
+Use these customer IDs from the test set (100 customers, IDs `CUST_00401`–`CUST_00500`):
+
+
+| Customer ID  | Profile                            | Expected Risk              |
+| ------------ | ---------------------------------- | -------------------------- |
+| `CUST_00401` | Good (low returns, old account)    | **Low** (Auto-Approve)     |
+| `CUST_00402` | Good                               | **Low** (Auto-Approve)     |
+| `CUST_00403` | Serial Returner (high return rate) | **High** (Auto-Reject)     |
+| `CUST_00404` | Occasional Returner                | **Medium** (Manual Review) |
+| `CUST_00405` | Good                               | **Low** (Auto-Approve)     |
+| `CUST_00410` | Serial Returner                    | **High** (Auto-Reject)     |
+
+
+> **Full list**: Check `synthetic_data/customers.csv` where `split=test`
+
+
+
+### Example curl Commands
+
+
+
+#### 1. Low Risk Order (Auto-Approve)
+
+```bash
+curl -X POST http://localhost:8000/api/v1/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order_id": "ORD_123456",
+    "customer_id": "CUST_00401",
+    "order_value": 3500,
+    "category": "fashion",
+    "payment_method": "upi",
+    "delivery_pincode": "560001"
+  }'
+```
+
+**Expected Response**:
+
+```json
+{
+  "risk_score": 0.0,
+  "recommendation": "Auto-Approve",
+  "confidence_score": 1.0,
+  "risk_factors": [],
+  "action_brief": {
+    "recommended_action": "Auto-Approve",
+    "order_summary": "Order analysis pending due to system error.",
+    "risk_assessment": "Risk computed deterministically. Narrative unavailable.",
+    "market_context": "System degradation detected.",
+    "mitigation_suggestions": ["Review order manually."],
+    "key_concerns": ["LLM synthesis pipeline error encountered."]
+  },
+  "processing_time_ms": 8
+}
+```
+
+
+
+#### 2. High Risk Order (Auto-Reject) - Serial Returner + COD High Value
+
+```bash
+curl -X POST http://localhost:8000/api/v1/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order_id": "ORD_123457",
+    "customer_id": "CUST_00403",
+    "order_value": 8500,
+    "category": "electronics",
+    "payment_method": "cod",
+    "delivery_pincode": "110001"
+  }'
+```
+
+**Expected Response**:
+
+```json
+{
+  "risk_score": 80.0,
+  "recommendation": "Auto-Reject",
+  "confidence_score": 1.0,
+  "risk_factors": [
+    "Serial returner (rate: 78%)",
+    "Return velocity spike (4 in 30d)",
+    "COD high-value order",
+    "High-RTO category (34%)"
+  ],
+  "action_brief": {
+    "recommended_action": "Auto-Reject",
+    "order_summary": "Order analysis pending due to system error.",
+    "risk_assessment": "Risk computed deterministically. Narrative unavailable.",
+    "market_context": "System degradation detected.",
+    "mitigation_suggestions": ["Review order manually."],
+    "key_concerns": ["LLM synthesis pipeline error encountered."]
+  },
+  "processing_time_ms": 10
+}
+```
+
+
+
+#### 3. Medium Risk Order (Manual Review) - New Customer + COD
+
+```bash
+curl -X POST http://localhost:8000/api/v1/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order_id": "ORD_123458",
+    "customer_id": "CUST_00404",
+    "order_value": 6500,
+    "category": "home",
+    "payment_method": "cod",
+    "delivery_pincode": "400001"
+  }'
+```
+
+**Expected Response**:
+
+```json
+{
+  "risk_score": 15.0,
+  "recommendation": "Auto-Approve",
+  "confidence_score": 0.9,
+  "risk_factors": ["COD high-value order"],
+  "action_brief": {
+    "recommended_action": "Auto-Approve",
+    ...
+  },
+  "processing_time_ms": 9
+}
+```
+
+> **Note**: With valid `GEMINI_API_KEY`, `action_brief` contains rich LLM-generated narratives instead of fallback messages.
+
+
+
+#### 4. Health Check
+
+```bash
+curl http://localhost:8000/api/v1/health
+```
+
+
+
+#### 5. Full Benchmark (takes ~30-60s)
+
+```bash
+curl http://localhost:8000/api/v1/benchmark
+```
+
+
+
 ### Analyze Response
 
 ```json
@@ -206,6 +382,41 @@ Content-Type: application/json
   "processing_time_ms": 142
 }
 ```
+
+
+
+## Performance Characteristics
+
+
+| Mode                                       | Latency        | Notes                         |
+| ------------------------------------------ | -------------- | ----------------------------- |
+| **No LLM (fallback)**                      | **~5-10ms**    | Deterministic pipeline only   |
+| **LLM Enabled (gemini-2.0-flash-lite)**    | **~300-600ms** | First call; cached thereafter |
+| **LLM Cached**                             | **~5-10ms**    | Subsequent similar orders     |
+| **Cache Warm (2nd request same customer)** | **~2-5ms**     | Profile + Signal cached       |
+
+
+
+
+### Caching Strategy
+
+- **Profile Cache**: 24hr TTL, keyed by `customer_id` (`{customer_id}_profile.json`)
+- **Signal Cache**: 24hr TTL, keyed by `customer_id + pincode` (`{customer_id}_{pincode}_signals.json`)
+- **LLM Narrative Cache**: Not yet implemented (planned)
+
+
+
+### Latency Breakdown (Cold Start, No LLM)
+
+
+| Component                                | Time     |
+| ---------------------------------------- | -------- |
+| Profile Agent (CSV lookup + computation) | ~2ms     |
+| Signal Agent (CSV lookup + computation)  | ~2ms     |
+| Risk Agent (9 rule evaluations)          | ~1ms     |
+| Synthesis Agent (fallback template)      | ~1ms     |
+| **Total**                                | **~6ms** |
+
 
 
 
@@ -293,6 +504,27 @@ uv run pytest tests/test_pipeline_integration.py -v
 
 
 
+## Web Dashboard
+
+The built-in frontend provides a real-time risk assessment UI:
+
+**Access**: [http://localhost:8000](http://localhost:8000) (after starting server)
+
+**Features**:
+
+- Order input form with validation
+- Live risk score with color-coded badge (Green/Yellow/Red)
+- Recommendation badge (Auto-Approve / Manual Review / Auto-Reject)
+- Confidence progress bar
+- Expandable sections: Order Summary, Risk Assessment, Market Context, Key Concerns, Mitigations, Audit Trail
+- Processing time display
+
+**Architecture**: Static files served via FastAPI at `/static/`, API calls to `/api/v1/analyze`
+
+---
+
+
+
 ## Deployment
 
 
@@ -302,17 +534,6 @@ uv run pytest tests/test_pipeline_integration.py -v
 ```bash
 docker-compose up --build
 ```
-
-
-
-### Production Checklist
-
-- [ ] Restrict CORS origins in `main.py`
-- [ ] Set strong `GEMINI_API_KEY` in environment
-- [ ] Configure shared cache volume for multi-instance
-- [ ] Add authentication/authorization to API endpoints
-- [ ] Set up monitoring (Prometheus/Grafana)
-- [ ] Configure log aggregation
 
 
 
