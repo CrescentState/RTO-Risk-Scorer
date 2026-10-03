@@ -7,6 +7,7 @@ Uses Pydantic for response validation, string.Template for safe prompt construct
 singleton Gemini client, and decision table for deterministic override.
 """
 
+import asyncio
 from dataclasses import dataclass
 from string import Template
 from typing import Any
@@ -50,7 +51,7 @@ def _compute_recommendation(state: dict[str, Any]) -> str:
     if confidence < settings.MIN_CONFIDENCE_FOR_AUTO:
         return "Manual Review"
 
-    return risk_data.get("recommendation", "Manual Review")
+    return str(risk_data.get("recommendation", "Manual Review"))
 
 
 def _safe_summary(d: dict, safe_keys: set | None = None) -> str:
@@ -60,7 +61,8 @@ def _safe_summary(d: dict, safe_keys: set | None = None) -> str:
                      "order_value", "category", "payment_method", "pincode_rto_rate",
                      "complaint_score", "social_sentiment", "category_return_rate",
                      "risk_score", "recommendation"}
-    return "{" + ", ".join(f"{k}: {d[k]}" for k in safe_keys if k in d) + "}"
+    parts: list[str] = [f"{k}: {d[k]}" for k in safe_keys if k in d]
+    return "{" + ", ".join(parts) + "}"
 
 
 def _build_prompt(state: dict[str, Any], deterministic_action: str) -> str:
@@ -106,12 +108,14 @@ def _build_prompt(state: dict[str, Any], deterministic_action: str) -> str:
     )
 
 
-def _parse_llm_response(response_text: str, fallback: dict) -> dict:
-    """Parse and validate LLM JSON response with fallbacks."""
+def _parse_llm_response(response_text: str, fallback: dict) -> tuple[dict[str, Any], str | None]:
+    """Parse and validate LLM JSON response with fallbacks.
+    Returns (parsed_dict, error_message) where error_message is None on success.
+    """
     import json
 
     if not response_text or not response_text.strip():
-        return fallback
+        return fallback, "Empty LLM response"
 
     raw_text = response_text.strip()
 
@@ -127,11 +131,11 @@ def _parse_llm_response(response_text: str, fallback: dict) -> dict:
 
     try:
         parsed = json.loads(raw_text)
-    except json.JSONDecodeError:
-        return fallback
+    except json.JSONDecodeError as e:
+        return fallback, f"LLM returned invalid JSON: {str(e)}"
 
     # Validate and coerce each field
-    result = {}
+    result: dict[str, Any] = {}
     result["order_summary"] = str(parsed.get("order_summary", fallback["order_summary"]))
     result["risk_assessment"] = str(parsed.get("risk_assessment", fallback["risk_assessment"]))
     result["market_context"] = str(parsed.get("market_context", fallback["market_context"]))
@@ -150,10 +154,10 @@ def _parse_llm_response(response_text: str, fallback: dict) -> dict:
     else:
         result["key_concerns"] = fallback["key_concerns"]
 
-    return result
+    return result, None
 
 
-def run_synthesis_agent(state: dict[str, Any]) -> dict[str, Any]:
+async def run_synthesis_agent(state: dict[str, Any]) -> dict[str, Any]:
     """
     Agent 4: Synthesis Agent
     Generates a structured merchant-facing action brief combining all prior agent outputs.
@@ -168,25 +172,47 @@ def run_synthesis_agent(state: dict[str, Any]) -> dict[str, Any]:
     action_brief = fallback.copy()
 
     # Attempt LLM Narrative Synthesis if API key is present
-    client = get_gemini_client()
-    if client is not None:
-        try:
-            prompt = _build_prompt(state, deterministic_action)
+    from core.config import settings
 
-            response = client.models.generate_content(
-                model=settings.GEMINI_MODEL,
-                contents=prompt,
-            )
+    # Skip LLM if narratives are disabled (fast processing mode)
+    if not settings.ENABLE_LLM_NARRATIVES:
+        action_brief = fallback.copy()
+    else:
+        client = get_gemini_client()
+        if client is not None:
+            try:
+                prompt = _build_prompt(state, deterministic_action)
 
-            if response and response.text:
-                parsed = _parse_llm_response(response.text, fallback)
-                action_brief.update(parsed)
-                # Ensure recommended_action is always deterministic
-                action_brief["recommended_action"] = deterministic_action
+                async def _call_llm_async() -> Any:
+                    return await asyncio.to_thread(
+                        client.models.generate_content,
+                        model=settings.GEMINI_MODEL,
+                        contents=prompt,
+                    )
 
-        except Exception as e:
-            errors.append(f"Synthesis LLM error: {str(e)}")
-            action_brief = fallback.copy()
+                response = await asyncio.wait_for(_call_llm_async(), timeout=15.0)
+
+                if response and response.text:
+                    parsed, parse_error = _parse_llm_response(response.text, fallback)
+                    if parse_error:
+                        msg = f"Synthesis LLM error: {parse_error}"
+                        if msg not in errors:
+                            errors.append(msg)
+                        action_brief = fallback.copy()
+                    else:
+                        action_brief.update(parsed)
+                        # Ensure recommended_action is always deterministic
+                        action_brief["recommended_action"] = deterministic_action
+
+            except TimeoutError:
+                if "Synthesis LLM timed out (15s)" not in errors:
+                    errors.append("Synthesis LLM timed out (15s)")
+                action_brief = fallback.copy()
+            except Exception as e:
+                msg = f"Synthesis LLM error: {str(e)}"
+                if msg not in errors:
+                    errors.append(msg)
+                action_brief = fallback.copy()
 
     # Programmatic override guarantees deterministic recommendation
     action_brief["recommended_action"] = deterministic_action

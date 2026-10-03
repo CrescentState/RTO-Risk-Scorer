@@ -1,0 +1,30 @@
+# Render Blueprint Configuration
+# This file defines the services for Render deployment
+# To deploy: push to GitHub, connect repo in Render, and Render will auto-detect this file
+
+services:
+  - type: web
+    name: rto-risk-scorer
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false  # Set in Render dashboard
+      - key: GEMINI_MODEL
+        value: gemini-3.1-flash-lite
+      - key: ENABLE_LLM_NARRATIVES
+        value: "false"
+      - key: CACHE_TTL_SECONDS
+        value: "86400"
+      - key: CACHE_DIR
+        value: "cache"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    # Auto-deploy on push to main
+    autoDeploy: true
+    # Health check path
+    healthCheckPath: /health
+    # Optional: scaling
+    # scaling:
+    #   minInstances: 1
+    #   maxInstances: 3

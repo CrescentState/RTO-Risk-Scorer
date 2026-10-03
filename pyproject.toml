@@ -7,11 +7,8 @@ name = "rto-risk-scorer"
 version = "0.1.0"
 description = "Multi-agent AI pipeline for COD order RTO risk assessment"
 readme = "README.md"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.13"
 license = {text = "MIT"}
-authors = [
-    {name = "Buildathon Team", email = "team@example.com"}
-]
 keywords = ["rto", "risk", "fintech", "ai", "agentic"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -20,7 +17,6 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
 ]
 
 dependencies = [
@@ -80,7 +76,10 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.mypy]
-python_version = "3.11"
+# Target 3.12: numpy 2.x stubs use 3.12-only `type` statement syntax.
+# Runtime support remains >=3.11,<3.13 and the code avoids 3.12-only syntax.
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+exclude = ".venv"

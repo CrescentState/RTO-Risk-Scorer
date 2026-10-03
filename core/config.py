@@ -21,8 +21,8 @@ class Settings(BaseSettings):
 
     # ── Model Configuration ──
     GEMINI_MODEL: str = Field(
-        default="gemini-1.5-flash",
-        description="Gemini model name (verified working: gemini-1.5-flash)",
+        default="gemini-3.1-flash-lite",
+        description="Gemini model name (verified working: gemini-3.1-flash-lite)",
     )
 
     # ── Cache Configuration ──
@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     USE_MOCK_DATA: bool = Field(
         default=False,
         description="If True, agents return hardcoded mock responses (no API calls)",
+    )
+    ENABLE_LLM_NARRATIVES: bool = Field(
+        default=False,
+        description="If True, enable LLM-generated narratives (slower processing)",
     )
 
 

@@ -7,6 +7,7 @@ Uses rule registry with frozen dataclass definitions, IntFlag bitmask for trigge
 singleton Gemini client for narrative generation, and dispatch dict for message formatting.
 """
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntFlag, StrEnum, auto
@@ -161,11 +162,12 @@ THRESHOLDS = RiskThresholds(
 )
 
 
-def _evaluate_rules(transaction_profile: dict[str, Any], signal_data: dict[str, Any]) -> tuple[float, list[str], "TriggeredRules"]:
+def evaluate_rules(transaction_profile: dict[str, Any], signal_data: dict[str, Any]) -> tuple[float, list[str], int]:
     """
     Evaluate all risk rules against transaction profile and signal data.
     Returns: (raw_score, triggered_factors, triggered_bitmask)
     Early exits when score reaches 100 (no need to evaluate remaining rules).
+    Public API for shared rule evaluation (e.g., test cases).
     """
 
     # Dispatch dict for message formatting - O(1) lookup
@@ -198,19 +200,19 @@ def _evaluate_rules(transaction_profile: dict[str, Any], signal_data: dict[str, 
 
     def _fmt_high_rto_category(tp: dict, sd: dict) -> str:
         rate_val = sd.get("category_return_rate")
-        return f"High-RTO category ({rate_val:.0%})" if rate_val is not None else "High-RTO category"
+        return f"High-RTO category ({rate_val:.0%})" if isinstance(rate_val, (int, float)) else "High-RTO category"
 
     # Dispatch dict: O(1) formatter lookup by rule name
     formatters = {
-        "serial_returner": lambda tp, sd: f"Serial returner (rate: {tp.get('return_rate'):.0%})" if tp.get("return_rate") is not None else "Serial returner",
-        "return_velocity_spike": lambda tp, sd: f"Return velocity spike ({tp.get('recent_returns_30d')} in 30d)" if tp.get("recent_returns_30d") is not None else "Return velocity spike",
+        "serial_returner": lambda tp, sd: f"Serial returner (rate: {tp.get('return_rate'):.0%})" if isinstance(tp.get("return_rate"), (int, float)) else "Serial returner",
+        "return_velocity_spike": lambda tp, sd: f"Return velocity spike ({tp.get('recent_returns_30d')} in 30d)" if isinstance(tp.get("recent_returns_30d"), (int, float)) else "Return velocity spike",
         "high_value_new_customer": lambda tp, sd: "High-value new customer",
         "cod_high_value": lambda tp, sd: "COD high-value order",
-        "high_rto_pincode": lambda tp, sd: f"High-RTO delivery pincode ({sd.get('pincode_rto_rate'):.0%})" if sd.get("pincode_rto_rate") is not None else "High-RTO delivery pincode",
+        "high_rto_pincode": lambda tp, sd: f"High-RTO delivery pincode ({sd.get('pincode_rto_rate'):.0%})" if isinstance(sd.get("pincode_rto_rate"), (int, float)) else "High-RTO delivery pincode",
         "high_complaint_history": lambda tp, sd: "High complaint history",
         "negative_social_signals": lambda tp, sd: "Negative social signals",
         "brand_new_account": lambda tp, sd: "Brand new account",
-        "high_rto_category": lambda tp, sd: f"High-RTO category ({sd.get('category_return_rate'):.0%})" if sd.get("category_return_rate") is not None else "High-RTO category",
+        "high_rto_category": lambda tp, sd: f"High-RTO category ({sd.get('category_return_rate'):.0%})" if isinstance(sd.get("category_return_rate"), (int, float)) else "High-RTO category",
     }
 
     # Map rule name to bitmask flag
@@ -220,10 +222,6 @@ def _evaluate_rules(transaction_profile: dict[str, Any], signal_data: dict[str, 
     bitmask = 0
 
     for i, rule in enumerate(RISK_RULES):
-        # Early exit: if score already >= 100, no need to evaluate more rules
-        if raw_score >= 100.0:
-            break
-
         if rule.condition(transaction_profile, signal_data):
             raw_score += rule.weight
             bitmask |= (1 << i)
@@ -238,8 +236,8 @@ def _evaluate_rules(transaction_profile: dict[str, Any], signal_data: dict[str, 
     return raw_score, triggered_factors, bitmask
 
 
-def _compute_recommendation(risk_score: float) -> str:
-    """Deterministic recommendation based on risk score thresholds."""
+def compute_recommendation(risk_score: float) -> str:
+    """Deterministic recommendation based on risk score thresholds. Public API."""
     if risk_score <= THRESHOLDS.auto_approve_max:
         return "Auto-Approve"
     elif risk_score <= THRESHOLDS.manual_review_max:
@@ -248,7 +246,7 @@ def _compute_recommendation(risk_score: float) -> str:
         return "Auto-Reject"
 
 
-def _generate_llm_narrative(
+async def _generate_llm_narrative(
     risk_score: float,
     recommendation: str,
     triggered_factors: list[str],
@@ -260,7 +258,14 @@ def _generate_llm_narrative(
     Generate LLM narrative using singleton Gemini client.
     Uses string.Template for safe prompt construction (prevents injection).
     Returns fallback narrative on any failure.
+    Respects ENABLE_LLM_NARRATIVES setting for fast processing.
     """
+    from core.config import settings
+
+    # Skip LLM if narratives are disabled (fast processing mode)
+    if not settings.ENABLE_LLM_NARRATIVES:
+        return DEFAULT_NARRATIVE
+
     client = get_gemini_client()
     if client is None:
         return DEFAULT_NARRATIVE
@@ -293,16 +298,26 @@ def _generate_llm_narrative(
         signals=safe_signals,
     )
 
-    try:
-        response = client.models.generate_content(
+    async def _call_llm_async() -> Any:
+        return await asyncio.to_thread(
+            client.models.generate_content,
             model=settings.GEMINI_MODEL,
             contents=prompt,
         )
-        if response and response.text and response.text.strip():
-            return response.text.strip()
 
+    try:
+        response = await asyncio.wait_for(_call_llm_async(), timeout=15.0)
+        text = str(response.text).strip() if response and response.text else ""
+        if text:
+            return text
+
+    except TimeoutError:
+        if "LLM narrative generation timed out (15s)" not in errors:
+            errors.append("LLM narrative generation timed out (15s)")
     except Exception as e:
-        errors.append(f"LLM narrative generation failed: {str(e)}")
+        msg = f"LLM narrative generation failed: {str(e)}"
+        if msg not in errors:
+            errors.append(msg)
 
     return DEFAULT_NARRATIVE
 
@@ -310,7 +325,7 @@ def _generate_llm_narrative(
 DEFAULT_NARRATIVE = "Risk assessment based on transaction history and delivery signals."
 
 
-def run_risk_agent(state: dict[str, Any]) -> dict[str, Any]:
+async def run_risk_agent(state: dict[str, Any]) -> dict[str, Any]:
     """
     Agent 3: Risk Scorer Agent
     Computes deterministic 0–100 risk score from transaction profile and signals.
@@ -320,35 +335,28 @@ def run_risk_agent(state: dict[str, Any]) -> dict[str, Any]:
     signal_data = state.get("signal_data") or {}
     errors = list(state.get("errors", []))
 
-    # Extract order_value from state (request), NOT from profile
-    # PRD: order_value is a critical input field from the request
-    order_value = state.get("order_value")
-    payment_method = state.get("payment_method")
-
-    # Prepare evaluation data - merge profile + signals + request fields
+    # Score canonical profile fields. The API layer rejects altered order
+    # details with HTTP 409 before the pipeline runs, so the profile holds
+    # the authoritative values; no request-level override is applied here.
     eval_profile = dict(transaction_profile)
-    if order_value is not None:
-        eval_profile["order_value"] = order_value
-    if payment_method is not None:
-        eval_profile["payment_method"] = payment_method
 
     # Evaluate all rules using registry
-    raw_score, triggered_factors, triggered_bitmask = _evaluate_rules(eval_profile, signal_data)
+    raw_score, triggered_factors, triggered_bitmask = evaluate_rules(eval_profile, signal_data)
 
     # Score calculation clamped to 100.0
     risk_score = min(THRESHOLDS.max_score, float(raw_score))
 
     # Deterministic recommendation
-    recommendation = _compute_recommendation(risk_score)
+    recommendation = compute_recommendation(risk_score)
 
     # LLM Narrative Generation (optional, never changes score)
-    risk_narrative = _generate_llm_narrative(
+    risk_narrative = await _generate_llm_narrative(
         risk_score=risk_score,
         recommendation=recommendation,
         triggered_factors=triggered_factors,
         transaction_profile=transaction_profile,
         signal_data=signal_data,
-        errors=[],
+        errors=errors,
     )
 
     risk_data = {

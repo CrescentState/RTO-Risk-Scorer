@@ -1,10 +1,12 @@
 """
 SystemState definitions for the RTO Risk Scorer pipeline.
-Uses TypedDict for LangGraph compatibility with operator.add reducer for errors.
+
+Sequential agents carry the complete error list forward and append only
+new unique messages; no additive reducer is used so retries and cache
+hits cannot duplicate entries.
 """
 
-import operator
-from typing import Annotated, TypedDict
+from typing import TypedDict
 
 
 class TransactionProfile(TypedDict, total=False):
@@ -80,7 +82,13 @@ class SystemState(TypedDict, total=False):
 
     # Cross-cutting
     confidence_score: float
-    errors: Annotated[list[str], operator.add]
+    errors: list[str]
+
+
+def append_unique_error(errors: list[str], message: str) -> None:
+    """Append a pipeline warning only if it is not already present."""
+    if message not in errors:
+        errors.append(message)
 
 
 def init_state(

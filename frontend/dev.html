@@ -3,17 +3,69 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RTO Risk Scorer</title>
+    <title>RTO Risk Scorer - Developer Console</title>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>RTO Risk Scorer</h1>
-            <p class="subtitle">COD Order Return-to-Origin Risk Assessment</p>
+            <h1>RTO Risk Scorer <span class="dev-tag">DEV</span></h1>
+            <p class="subtitle">Developer Console - test, inspect, and understand the system | <a href="/">User page</a></p>
         </header>
 
         <main>
+            <section class="card" id="dev-panel">
+                <h2>Developer Tools</h2>
+
+                <div class="test-case-selector">
+                    <label for="test-case-select">Quick Test Cases:</label>
+                    <select id="test-case-select" disabled>
+                        <option value="">Loading test cases...</option>
+                    </select>
+                    <button id="refresh-cases" class="btn-secondary" disabled>Refresh</button>
+                    <button id="clear-selection" class="btn-secondary" style="display: none;">Clear Selection</button>
+                </div>
+
+                <div class="dev-grid">
+                    <div class="dev-block">
+                        <div class="dev-block-header">
+                            <h3>Endpoints</h3>
+                        </div>
+                        <ul class="dev-endpoints">
+                            <li><a href="/docs" target="_blank">API Docs (Swagger)</a></li>
+                            <li><a href="/api/v1/test-cases" target="_blank">GET /api/v1/test-cases</a></li>
+                            <li><a href="/api/v1/metrics" target="_blank">GET /api/v1/metrics</a></li>
+                            <li><a href="/api/v1/benchmark" target="_blank">GET /api/v1/benchmark</a></li>
+                            <li><a href="/health" target="_blank">GET /health</a></li>
+                        </ul>
+                    </div>
+
+                    <div class="dev-block">
+                        <div class="dev-block-header">
+                            <h3>Metrics</h3>
+                            <button id="refresh-metrics" class="btn-secondary">Refresh</button>
+                        </div>
+                        <div id="metrics-body"><div class="dev-status">Loading metrics...</div></div>
+                    </div>
+
+                    <div class="dev-block">
+                        <div class="dev-block-header">
+                            <h3>Benchmark</h3>
+                            <button id="refresh-benchmark" class="btn-secondary">Run</button>
+                        </div>
+                        <div id="benchmark-body"><div class="dev-status">Press Run to compute the benchmark (first run may take a while).</div></div>
+                    </div>
+                </div>
+
+                <div class="dev-block">
+                    <div class="dev-block-header">
+                        <h3>Raw Request / Response Viewer</h3>
+                        <button id="clear-viewer" class="btn-secondary">Clear</button>
+                    </div>
+                    <div id="api-viewer"><div class="dev-status">Viewer cleared. Verify or analyze an order to capture traffic.</div></div>
+                </div>
+            </section>
+
             <section class="card">
                 <h2>Order Analysis</h2>
 
@@ -40,11 +92,11 @@
                 <!-- Step 2: Order Details (hidden initially) -->
                 <div id="step2-details" class="detail-step" style="display: none;">
                     <h3>Step 2: Order Details</h3>
-                    <p class="step-description">Order and customer verified. Enter remaining details for risk analysis.</p>
+                    <p class="step-description">Order and customer verified. Canonical values below are read-only.</p>
                     <div class="verified-info" id="verified-info"></div>
-                    
+
                     <form id="analyze-form" method="post" action="javascript:void(0);">
-                        
+
                         <div class="form-row">
                             <div class="form-group">
                                 <label for="order_value">Order Value (₹)</label>
@@ -90,6 +142,7 @@
                     <h2>Risk Assessment</h2>
                     <div class="header-badges">
                         <span class="confidence-badge" id="confidence-badge">Confidence: --</span>
+                        <span class="comparison-badge" id="comparison-badge" style="display: none;"></span>
                     </div>
                     <div class="company-info" id="company-info" style="display: none;"></div>
                 </div>
@@ -138,11 +191,11 @@
         </main>
 
         <footer>
-            <p>RTO Risk Scorer v0.1.0 | <a href="/docs">API Docs</a></p>
+            <p>RTO Risk Scorer v0.1.0 (dev) | <a href="/">User page</a> | <a href="/docs">API Docs</a></p>
         </footer>
     </div>
 
     <script src="/static/shared.js"></script>
-    <script src="/static/app.js"></script>
+    <script src="/static/dev.js"></script>
 </body>
 </html>

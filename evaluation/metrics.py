@@ -1,18 +1,14 @@
 from typing import Any
 
-# Held-out dataset representation for benchmark evaluation
-# Each tuple: (order_id, predicted_risk_score, actual_is_rto)
-HELD_OUT_DATASET: list[dict[str, Any]] = [
-    # Mock held-out set simulating 100 benchmark outcomes
-]
 
-def compute_benchmark_metrics(dataset: list[dict[str, Any]] = None) -> dict[str, Any]:
+def compute_benchmark_metrics(dataset: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """
     Computes precision, recall, F1 score, FPR, auto-approval rate,
     and estimated monetary savings from RTO prevention.
+    Raises ValueError when no measured dataset is provided.
     """
-    if dataset is None:
-        dataset = HELD_OUT_DATASET
+    if not dataset:
+        raise ValueError("Benchmark data unavailable: empty or missing dataset")
 
     tp = 0  # Flagged as RTO (> 60.0 score or Manual/Reject) + Actually RTO
     fp = 0  # Flagged as RTO + Actually legit
@@ -21,22 +17,6 @@ def compute_benchmark_metrics(dataset: list[dict[str, Any]] = None) -> dict[str,
 
     auto_approved_count = 0
     total_orders = len(dataset)
-
-    if total_orders == 0:
-        # Static mock fallback matching required benchmark report output schema
-        return {
-            "total_orders": 100,
-            "true_positives": 18,
-            "false_positives": 7,
-            "false_negatives": 12,
-            "true_negatives": 63,
-            "precision": 0.72,
-            "recall": 0.60,
-            "f1_score": 0.655,
-            "false_positive_rate": 0.10,
-            "auto_approval_rate": 0.45,
-            "estimated_money_saved_inr": 1250.00
-        }
 
     for item in dataset:
         score = item["risk_score"]

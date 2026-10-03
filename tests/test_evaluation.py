@@ -1,20 +1,12 @@
+import pytest
+
 from evaluation.metrics import compute_benchmark_metrics
 
 
-# 1. Verification of default mock benchmark report output
+# 1. Missing dataset raises a clear service error (no mock fallback)
 def test_compute_benchmark_metrics_default():
-    metrics = compute_benchmark_metrics()
-    assert metrics["total_orders"] == 100
-    assert metrics["true_positives"] == 18
-    assert metrics["false_positives"] == 7
-    assert metrics["false_negatives"] == 12
-    assert metrics["true_negatives"] == 63
-    assert metrics["precision"] == 0.72
-    assert metrics["recall"] == 0.60
-    assert metrics["f1_score"] == 0.655
-    assert metrics["false_positive_rate"] == 0.10
-    assert metrics["auto_approval_rate"] == 0.45
-    assert metrics["estimated_money_saved_inr"] == 1250.00
+    with pytest.raises(ValueError, match="Benchmark data unavailable"):
+        compute_benchmark_metrics()
 
 # 2. Perfect Performance Metrics (Precision = 1.0, Recall = 1.0)
 def test_compute_benchmark_metrics_perfect_scores():
@@ -53,12 +45,10 @@ def test_compute_benchmark_metrics_all_fn():
     assert metrics["f1_score"] == 0.0
     assert metrics["auto_approval_rate"] == 1.0
 
-# 5. Empty Dataset Boundary (Division by Zero Safety)
+# 5. Empty Dataset Boundary (clear service error, no mock fallback)
 def test_compute_benchmark_metrics_empty_dataset_handling():
-    # An empty dataset list must return the default static mock report safely
-    metrics = compute_benchmark_metrics([])
-    assert metrics["total_orders"] == 100
-    assert metrics["precision"] == 0.72
+    with pytest.raises(ValueError, match="Benchmark data unavailable"):
+        compute_benchmark_metrics([])
 
 # 6. Auto-Approve Boundary Condition (risk_score = 25.0 vs 25.1)
 def test_compute_benchmark_metrics_auto_approve_boundary():

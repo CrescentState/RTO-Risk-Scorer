@@ -1,5 +1,4 @@
 import os
-from functools import lru_cache
 from typing import Any
 
 import pandas as pd
@@ -21,27 +20,73 @@ REQUIRED_PROFILE_FIELDS = {
 
 def run_profile_agent(state: dict[str, Any]) -> dict[str, Any]:
     customer_id = state.get("customer_id")
-    state.get("order_id")
+    order_id = state.get("order_id")
     order_value = state.get("order_value")
     category = state.get("category")
     payment_method = state.get("payment_method")
     delivery_pincode = state.get("delivery_pincode")
 
-    # Preserve error chain and initialize confidence
-    errors = list(state.get("errors", []))
+    # Initialize confidence; sequential pipeline carries the complete error list forward
     confidence_score = float(state.get("confidence_score", 1.0))
+    errors: list[str] = list(state.get("errors", []))
 
-    cache_key = f"{customer_id}_profile"
+    # Track which validations have been done for this order_id to avoid duplicates across pipeline calls
+    validated_orders: set[str] = set(state.get("_validated_orders", []))
+    validated_fields: set[str] = set(state.get("_validated_fields", []))
+
+    # Validate order_id matches customer_id in orders CSV
+    if order_id and customer_id:
+        if order_id not in validated_orders:
+            order_match_error = _validate_order_customer_match(order_id, customer_id)
+            if order_match_error and order_match_error not in errors:
+                errors.append(order_match_error)
+                confidence_score -= 0.3
+
+        # Validate all order fields match the order_id in orders CSV
+        if order_id not in validated_fields:
+            field_errors = _validate_order_fields_match(order_id, order_value, category, payment_method, delivery_pincode)
+            for field_error in field_errors:
+                if field_error not in errors:
+                    errors.append(field_error)
+                    confidence_score -= 0.15
+
+        # Mark this order as validated
+        validated_orders.add(order_id)
+        validated_fields.add(order_id)
+        state["_validated_orders"] = list(validated_orders)
+        state["_validated_fields"] = list(validated_fields)
+    else:
+        # No order_id provided, skip validation
+        pass
+
+    cache_key = f"v1:{customer_id}_{order_id}_profile"
     cached_data = get_cached_response(cache_key)
 
     if cached_data and _is_valid_cached_profile(cached_data):
-        state["transaction_profile"] = cached_data
+        # Reapply the data-phase deduction/warnings stored with the payload so
+        # warm cache hits produce identical confidence and audit entries.
+        meta = cached_data.get("_cache_meta", {}) if isinstance(cached_data, dict) else {}
+        try:
+            deduction = float(meta.get("deduction", 0.0))
+        except (TypeError, ValueError):
+            deduction = 0.0
+        warnings = meta.get("warnings", [])
+        if isinstance(warnings, list):
+            for warning in warnings:
+                if isinstance(warning, str) and warning not in errors:
+                    errors.append(warning)
+        confidence_score = max(0.0, min(1.0, confidence_score - max(0.0, deduction)))
+        state["transaction_profile"] = {k: v for k, v in cached_data.items() if k != "_cache_meta"}
         state["company_name"] = cached_data.get("company_name", f"Customer_{customer_id}")
         state["errors"] = errors
         state["confidence_score"] = confidence_score
         return state
     elif cached_data:
-        errors.append("Cache hit but profile data incomplete; re-querying database.")
+        if "Cache hit but profile data incomplete; re-querying database." not in errors:
+            errors.append("Cache hit but profile data incomplete; re-querying database.")
+
+    data_phase_confidence = confidence_score
+    data_phase_error_count = len(errors)
 
     profile = None
     company_name = f"Customer_{customer_id}"
@@ -61,10 +106,10 @@ def run_profile_agent(state: dict[str, Any]) -> dict[str, Any]:
             row = cust_row.iloc[0]
 
             # Compute historical Pincode RTO rate using memoized function
-            pincode_rto_rate = _compute_pincode_rto_rate(orders_df, delivery_pincode)
+            pincode_rto_rate = _compute_pincode_rto_rate(orders_df, delivery_pincode or "")
 
             # Compute recent_returns_30d from orders
-            recent_returns_30d = _compute_recent_returns_30d(orders_df, customer_id)
+            recent_returns_30d = _compute_recent_returns_30d(orders_df, customer_id or "")
 
             # Extract fields safely
             total_orders = _safe_get(row, "total_orders")
@@ -108,7 +153,13 @@ def run_profile_agent(state: dict[str, Any]) -> dict[str, Any]:
             }
 
             if data_available:
-                set_cached_response(cache_key, profile)
+                deduction = round(max(0.0, data_phase_confidence - confidence_score), 4)
+                payload = dict(profile)
+                payload["_cache_meta"] = {
+                    "deduction": deduction,
+                    "warnings": errors[data_phase_error_count:],
+                }
+                set_cached_response(cache_key, payload)
 
     except Exception as e:
         errors.append(f"Database error / timeout in Profile Agent: {str(e)}")
@@ -126,24 +177,15 @@ def run_profile_agent(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
-@lru_cache(maxsize=64)
 def _load_customers_df() -> pd.DataFrame:
-    """Load customers CSV with LRU cache."""
-    return pd.read_csv(CUSTOMERS_CSV)
+    """Load customers CSV - reads fresh each time from configured path."""
+    return pd.read_csv(settings.CUSTOMERS_CSV)
 
 
-@lru_cache(maxsize=64)
 def _load_orders_df() -> pd.DataFrame:
-    """Load orders CSV with LRU cache."""
-    return pd.read_csv(ORDERS_CSV) if os.path.exists(ORDERS_CSV) else pd.DataFrame()
-
-
-def _clear_profile_cache() -> None:
-    """Clear LRU caches for testing purposes."""
-    _load_customers_df.cache_clear()
-    _load_orders_df.cache_clear()
-    _compute_pincode_rto_rate.cache_clear()
-    _compute_recent_returns_30d.cache_clear()
+    """Load orders CSV - reads fresh each time from configured path."""
+    orders_csv = settings.ORDERS_CSV
+    return pd.read_csv(orders_csv) if os.path.exists(orders_csv) else pd.DataFrame()
 
 
 def _compute_pincode_rto_rate(orders_df: pd.DataFrame, delivery_pincode: str) -> float | None:
@@ -181,7 +223,12 @@ def _compute_recent_returns_30d(orders_df: pd.DataFrame, customer_id: str) -> in
     return int(cust_orders["recent_returns_30d"].sum())
 
 
-def _safe_get(row: pd.Series, col: str, default=None):
+def _clear_profile_cache() -> None:
+    """Clear caches for testing purposes. No-op since we removed LRU caches."""
+    pass
+
+
+def _safe_get(row: pd.Series, col: str, default: Any = None) -> Any:
     """Safely extract value from pandas Series with NaN handling."""
     if col not in row.index:
         return default
@@ -217,7 +264,13 @@ def _is_valid_cached_profile(data: dict) -> bool:
     return not data["total_orders"] < 0
 
 
-def _build_default_profile(order_value, category, payment_method, delivery_pincode, data_available=False):
+def _build_default_profile(
+    order_value: Any,
+    category: Any,
+    payment_method: Any,
+    delivery_pincode: Any,
+    data_available: bool = False,
+) -> dict[str, Any]:
     return {
         "total_orders": 0,
         "return_rate": 0.0,
@@ -232,3 +285,65 @@ def _build_default_profile(order_value, category, payment_method, delivery_pinco
         "account_age_days": 0,
         "data_available": data_available,
     }
+
+
+def _validate_order_customer_match(order_id: str, customer_id: str) -> str | None:
+    """Validate that order_id belongs to customer_id in orders CSV.
+    Returns error message if mismatch, None if valid or validation not possible."""
+    try:
+        orders_df = _load_orders_df()
+        if orders_df.empty:
+            return None  # Cannot validate, skip
+        match = orders_df[
+            (orders_df["order_id"] == order_id) & (orders_df["customer_id"] == customer_id)
+        ]
+        if match.empty:
+            return f"Order ID {order_id} does not belong to customer {customer_id}"
+    except Exception:
+        return None  # Skip validation on error
+    return None
+
+
+def _validate_order_fields_match(order_id: str, order_value: float | None, category: str | None,
+                                  payment_method: str | None, delivery_pincode: str | None) -> list[str]:
+    """Validate that order_id fields match the orders CSV.
+    Returns list of error messages for mismatched fields, empty list if all match or validation not possible."""
+    errors: list[str] = []
+    try:
+        orders_df = _load_orders_df()
+        if orders_df.empty:
+            return errors  # Cannot validate, skip
+
+        match = orders_df[orders_df["order_id"] == order_id]
+        if match.empty:
+            return [f"Order ID {order_id} not found in database"]
+
+        order_row = match.iloc[0]
+
+        # Check order_value (allow small float tolerance)
+        if order_value is not None:
+            stored_value = float(order_row["order_value"])
+            if abs(stored_value - order_value) > 0.01:  # 1 paisa tolerance
+                errors.append(f"Order value mismatch: expected {stored_value}, got {order_value}")
+
+        # Check category
+        if category is not None:
+            stored_category = str(order_row["category"])
+            if stored_category != category:
+                errors.append(f"Category mismatch: expected {stored_category}, got {category}")
+
+        # Check payment_method
+        if payment_method is not None:
+            stored_payment = str(order_row["payment_method"])
+            if stored_payment != payment_method:
+                errors.append(f"Payment method mismatch: expected {stored_payment}, got {payment_method}")
+
+        # Check delivery_pincode
+        if delivery_pincode is not None:
+            stored_pincode = str(order_row["delivery_pincode"])
+            if stored_pincode != delivery_pincode:
+                errors.append(f"Delivery pincode mismatch: expected {stored_pincode}, got {delivery_pincode}")
+
+    except Exception:
+        pass  # Skip validation on error
+    return errors

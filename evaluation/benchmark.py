@@ -1,29 +1,37 @@
 """
 Full benchmark runner for RTO Risk Scorer.
-Runs the complete pipeline on the held-out test set (100 test customers)
-and computes all metrics using evaluation.metrics.
+Runs the complete pipeline on the held-out test set and computes all
+metrics using evaluation.metrics. LLM narratives are always disabled
+during benchmark computation.
 """
 
+import asyncio
 from typing import Any
 
 import pandas as pd
 
-from core.orchestrator import run_pipeline
+from core.config import settings
+from core.orchestrator import run_pipeline_async
 from evaluation.metrics import compute_benchmark_metrics
-from synthetic_data.generator import generate_dataset
 
 
-def run_benchmark(
-    customers_csv: str = "synthetic_data/customers.csv",
-    orders_csv: str = "synthetic_data/orders.csv",
+async def run_benchmark_async(
+    customers_csv: str | None = None,
+    orders_csv: str | None = None,
 ) -> dict[str, Any]:
     """
     Run full benchmark on held-out test set.
     Returns complete benchmark report matching PRD output format.
+    Raises ValueError when benchmark data is unavailable or invalid.
     """
-    import os
+    from synthetic_data.generator import generate_dataset
+
+    customers_csv = customers_csv or settings.CUSTOMERS_CSV
+    orders_csv = orders_csv or settings.ORDERS_CSV
 
     # Generate synthetic data if files don't exist
+    import os
+
     if not os.path.exists(customers_csv) or not os.path.exists(orders_csv):
         generate_dataset(num_customers=500)
 
@@ -31,7 +39,9 @@ def run_benchmark(
     customers_df = pd.read_csv(customers_csv)
     orders_df = pd.read_csv(orders_csv)
 
-    # Filter to test set only (100 test customers)
+    # Filter to test set only (held-out test customers)
+    if "split" not in customers_df.columns or "split" not in orders_df.columns:
+        raise ValueError("Benchmark data invalid: missing 'split' column")
     test_customers = customers_df[customers_df["split"] == "test"]
     test_customer_ids = set(test_customers["customer_id"])
 
@@ -42,43 +52,30 @@ def run_benchmark(
     ]
 
     if len(test_orders) == 0:
-        # Return mock metrics if no test orders
-        return {
-            "total_orders": 0,
-            "true_positives": 0,
-            "false_positives": 0,
-            "false_negatives": 0,
-            "true_negatives": 0,
-            "precision": 0.0,
-            "recall": 0.0,
-            "f1_score": 0.0,
-            "false_positive_rate": 0.0,
-            "auto_approval_rate": 0.0,
-            "estimated_money_saved_inr": 0.0,
-            "benchmark_info": {
-                "total_customers": 0,
-                "total_test_orders": 0,
-                "rto_rate_in_test": 0.0,
-            }
-        }
+        raise ValueError("Benchmark data unavailable: no held-out test orders")
 
-    # Build dataset for evaluation
-    dataset: list[dict[str, Any]] = []
+    # Disable LLM narratives for benchmark speed and determinism
+    original_llm_setting = settings.ENABLE_LLM_NARRATIVES
+    settings.ENABLE_LLM_NARRATIVES = False
+    try:
+        dataset: list[dict[str, Any]] = []
 
-    for _, order in test_orders.iterrows():
-        result = run_pipeline(
-            order_id=order["order_id"],
-            customer_id=order["customer_id"],
-            order_value=order["order_value"],
-            category=order["category"],
-            payment_method=order["payment_method"],
-            delivery_pincode=order["delivery_pincode"],
-        )
+        for _, order in test_orders.iterrows():
+            result = await run_pipeline_async(
+                order_id=order["order_id"],
+                customer_id=order["customer_id"],
+                order_value=float(order["order_value"]),
+                category=order["category"],
+                payment_method=order["payment_method"],
+                delivery_pincode=str(order["delivery_pincode"]),
+            )
 
-        dataset.append({
-            "risk_score": result["risk_data"]["risk_score"],
-            "actual_is_rto": order["ground_truth"] == "rto",
-        })
+            dataset.append({
+                "risk_score": result["risk_data"]["risk_score"],
+                "actual_is_rto": order["ground_truth"] == "rto",
+            })
+    finally:
+        settings.ENABLE_LLM_NARRATIVES = original_llm_setting
 
     # Compute metrics using evaluation module
     metrics = compute_benchmark_metrics(dataset)
@@ -91,6 +88,18 @@ def run_benchmark(
     }
 
     return metrics
+
+
+def run_benchmark(
+    customers_csv: str | None = None,
+    orders_csv: str | None = None,
+) -> dict[str, Any]:
+    """Synchronous wrapper for CLI usage. Fails clearly inside a running loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(run_benchmark_async(customers_csv, orders_csv))
+    raise RuntimeError("run_benchmark() cannot be called from a running event loop; use await run_benchmark_async() instead")
 
 
 def run_benchmark_cli() -> None:

@@ -35,29 +35,33 @@ def base_state():
     }
 
 # 1. Standard Recommendation Pass-Through
-def test_synthesis_agent_standard_recommendation(base_state):
-    res = run_synthesis_agent(base_state)
+@pytest.mark.asyncio
+async def test_synthesis_agent_standard_recommendation(base_state):
+    res = await run_synthesis_agent(base_state)
     assert res["action_brief"]["recommended_action"] == "Auto-Reject"
 
 # 2. Low Confidence Override (< 0.5 forces "Manual Review")
-def test_synthesis_agent_low_confidence_override(base_state):
+@pytest.mark.asyncio
+async def test_synthesis_agent_low_confidence_override(base_state):
     base_state["confidence_score"] = 0.45
     base_state["risk_data"]["recommendation"] = "Auto-Reject"
 
-    res = run_synthesis_agent(base_state)
+    res = await run_synthesis_agent(base_state)
     # Must override Auto-Reject to Manual Review
     assert res["action_brief"]["recommended_action"] == "Manual Review"
 
 # 3. Confidence Boundary Test (exact 0.50 retains risk recommendation)
-def test_synthesis_agent_confidence_boundary(base_state):
+@pytest.mark.asyncio
+async def test_synthesis_agent_confidence_boundary(base_state):
     base_state["confidence_score"] = 0.50
     base_state["risk_data"]["recommendation"] = "Auto-Approve"
 
-    res = run_synthesis_agent(base_state)
+    res = await run_synthesis_agent(base_state)
     assert res["action_brief"]["recommended_action"] == "Auto-Approve"
 
 # 4. Programmatic Correction of LLM Hallucinated Recommendation
-def test_synthesis_agent_llm_hallucinated_label_correction(base_state):
+@pytest.mark.asyncio
+async def test_synthesis_agent_llm_hallucinated_label_correction(base_state):
     # Mock LLM returning a hallucinated recommendation field ("MUST SHIP IMMEDIATELY!!!")
     mock_llm_response = MagicMock()
     mock_llm_response.text = '''
@@ -75,29 +79,43 @@ def test_synthesis_agent_llm_hallucinated_label_correction(base_state):
         patch("google.genai.Client") as mock_client,
     ):
         mock_client.return_value.models.generate_content.return_value = mock_llm_response
-        res = run_synthesis_agent(base_state)
+        res = await run_synthesis_agent(base_state)
 
         # Must overwrite hallucination with state's deterministic recommendation
         assert res["action_brief"]["recommended_action"] == "Auto-Reject"
 
 # 5. Malformed JSON Fallback Handling
-def test_synthesis_agent_malformed_json_fallback(base_state):
+@pytest.mark.asyncio
+async def test_synthesis_agent_malformed_json_fallback(base_state):
     mock_llm_response = MagicMock()
     mock_llm_response.text = "NOT_VALID_JSON_STRING"
 
+    import core.clients
+    import core.config
+    original_client = core.clients._gemini_client
+    core.config.settings.ENABLE_LLM_NARRATIVES = True
+    core.clients._gemini_client = None  # Force re-initialization
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = MagicMock(text="NOT_VALID_JSON_STRING")
+
     with (
         patch.dict(os.environ, {"GEMINI_API_KEY": "fake_key"}),
-        patch("google.genai.Client") as mock_client,
+        patch("agents.synthesis_agent.get_gemini_client", return_value=mock_client),
     ):
-        mock_client.return_value.models.generate_content.return_value = mock_llm_response
-        res = run_synthesis_agent(base_state)
+        try:
+            res = await run_synthesis_agent(base_state)
 
-        assert res["action_brief"]["order_summary"] == "Order analysis pending due to system error."
-        assert res["action_brief"]["recommended_action"] == "Auto-Reject"
-        assert any("Synthesis LLM error" in err for err in res["errors"])
+            assert res["action_brief"]["order_summary"] == "Order analysis pending due to system error."
+            assert res["action_brief"]["recommended_action"] == "Auto-Reject"
+            assert any("Synthesis LLM error" in err for err in res["errors"])
+        finally:
+            core.config.settings.ENABLE_LLM_NARRATIVES = False
+            core.clients._gemini_client = original_client
 
 # 6. Fallback Payload Structure without API Key
-def test_synthesis_agent_fallback_no_api_key(base_state):
+@pytest.mark.asyncio
+async def test_synthesis_agent_fallback_no_api_key(base_state):
     with patch.dict(os.environ, {}, clear=True):
         # Also clear cached client
         import core.clients
@@ -106,7 +124,7 @@ def test_synthesis_agent_fallback_no_api_key(base_state):
         core.clients._gemini_client = None
         core.clients._gemini_warned = False
         try:
-            res = run_synthesis_agent(base_state)
+            res = await run_synthesis_agent(base_state)
             brief = res["action_brief"]
             assert brief["order_summary"] == "Order analysis pending due to system error."
             assert brief["recommended_action"] == "Auto-Reject"
@@ -116,7 +134,8 @@ def test_synthesis_agent_fallback_no_api_key(base_state):
             core.clients._gemini_warned = original_warned
 
 # 7. Error Accumulation & Preservation
-def test_synthesis_agent_error_accumulation(base_state):
+@pytest.mark.asyncio
+async def test_synthesis_agent_error_accumulation(base_state):
     base_state["errors"] = ["Upstream agent failure"]
     with patch.dict(os.environ, {}, clear=True):
         # Also patch the settings to have no API key
@@ -130,7 +149,7 @@ def test_synthesis_agent_error_accumulation(base_state):
         core.clients._gemini_client = None
         core.clients._gemini_warned = False
         try:
-            res = run_synthesis_agent(base_state)
+            res = await run_synthesis_agent(base_state)
             assert len(res["errors"]) == 1
             assert res["errors"][0] == "Upstream agent failure"
         finally:
@@ -139,8 +158,9 @@ def test_synthesis_agent_error_accumulation(base_state):
             core.clients._gemini_warned = original_warned
 
 # 8. None-Safety on Empty Input State
-def test_synthesis_agent_none_safety():
-    res = run_synthesis_agent({})
+@pytest.mark.asyncio
+async def test_synthesis_agent_none_safety():
+    res = await run_synthesis_agent({})
     brief = res["action_brief"]
     assert brief["recommended_action"] == "Manual Review"  # Confidence default (1.0) with empty risk_data defaults to Manual Review
     assert brief["order_summary"] == "Order analysis pending due to system error."

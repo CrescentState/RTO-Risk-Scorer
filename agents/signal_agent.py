@@ -2,12 +2,13 @@ import contextlib
 import csv
 import os
 from collections import deque
-from functools import lru_cache
 from typing import Any
 
 from core.cache import get_cached_response, set_cached_response
+from core.config import settings
 
-SIGNALS_CSV = "synthetic_data/signals.csv"
+# Use config setting for CSV path
+SIGNALS_CSV = settings.SIGNALS_CSV
 
 # Category defaults: RTO rates (for pincode fallback) and Return rates (for category fallback)
 DEFAULT_CATEGORY_RTO_RATES = {
@@ -38,6 +39,7 @@ def run_signal_agent(state: dict[str, Any]) -> dict[str, Any]:
     Uses LRU cache for parsed signals and deque for event processing.
     """
     customer_id = state.get("customer_id", "")
+    order_id = state.get("order_id", "")
     delivery_pincode = str(state.get("delivery_pincode", ""))
     category = state.get("category", "")
 
@@ -48,17 +50,34 @@ def run_signal_agent(state: dict[str, Any]) -> dict[str, Any]:
     transaction_profile = state.get("transaction_profile", {})
     profile_account_age = transaction_profile.get("account_age_days")
 
-    # Step 1: Cache Check (24hr TTL, key: "{customer_id}_{pincode}_signals")
-    cache_key = f"{customer_id}_{delivery_pincode}_signals"
+    # Track initial error count to identify signal agent's own errors
+    initial_error_count = len(state.get("errors", []))
+    signal_start_confidence = confidence_score
+
+    # Step 1: Cache Check (24hr TTL, versioned key scoped to one exact order)
+    cache_key = f"v1:{customer_id}_{order_id}_{delivery_pincode}_{category}_signals"
     cached_signals = get_cached_response(cache_key)
 
     if cached_signals and isinstance(cached_signals, dict):
         # Validate cached data completeness
         if _is_valid_cached_signal(cached_signals):
-            # Restore cached errors if present
-            cached_errors = cached_signals.get("_cached_errors", [])
-            state["signal_data"] = {k: v for k, v in cached_signals.items() if k != "_cached_errors"}
-            state["errors"] = errors + cached_errors
+            # Reapply stored deduction/warnings so warm hits match cold runs.
+            # Only signal agent's own warnings are restored, never profile errors.
+            meta = cached_signals.get("_cache_meta", {}) if isinstance(cached_signals, dict) else {}
+            try:
+                deduction = float(meta.get("deduction", 0.0))
+            except (TypeError, ValueError):
+                deduction = 0.0
+            warnings = meta.get("warnings", cached_signals.get("_cached_errors", []))
+            if isinstance(warnings, list):
+                for warning in warnings:
+                    if isinstance(warning, str) and warning not in errors:
+                        errors.append(warning)
+            confidence_score = max(0.0, min(1.0, confidence_score - max(0.0, deduction)))
+            state["signal_data"] = {
+                k: v for k, v in cached_signals.items() if k not in ("_cached_errors", "_cache_meta")
+            }
+            state["errors"] = errors
             state["confidence_score"] = confidence_score
             return state
         else:
@@ -66,9 +85,9 @@ def run_signal_agent(state: dict[str, Any]) -> dict[str, Any]:
             if cache_error not in errors:
                 errors.append(cache_error)
 
-    # Step 2: Query Synthetic Signal Database with memoized CSV parsing
+    # Step 2: Query Synthetic Signal Database scoped to this exact order
     try:
-        exact_match, fallback_match = _query_signals_db(customer_id, delivery_pincode)
+        matched_row = _query_signals_db(customer_id, order_id, delivery_pincode)
     except Exception as e:
         db_error = f"Signal database timeout/error: {str(e)}"
         if db_error not in errors:
@@ -99,19 +118,9 @@ def run_signal_agent(state: dict[str, Any]) -> dict[str, Any]:
     raw_sentiment = None
     recent_events: list[str] = ["None"]
     signal_account_age = profile_account_age if profile_account_age is not None else 0
-    pincode_matched = False
-
-    if exact_match:
-        matched_row = exact_match
-        pincode_matched = True
-    elif fallback_match:
-        matched_row = fallback_match
-        pincode_matched = False
-    else:
-        matched_row = None
 
     if matched_row is None:
-        no_signal_error = f"No external signals found for customer {customer_id} / pincode {delivery_pincode}."
+        no_signal_error = f"No external signals found for customer {customer_id} / order {order_id}."
         if no_signal_error not in errors:
             errors.append(no_signal_error)
         confidence_score -= 0.1
@@ -130,14 +139,6 @@ def run_signal_agent(state: dict[str, Any]) -> dict[str, Any]:
             with contextlib.suppress(ValueError):
                 signal_account_age = int(matched_row["account_age_days"])
 
-    # If pincode didn't match exactly, apply pincode penalty
-    if not pincode_matched and signals_available:
-        raw_pincode_rate = None  # Force category fallback
-        confidence_score -= 0.1
-        pincode_error = f"Pincode {delivery_pincode} not found for customer; using category fallback."
-        if pincode_error not in errors:
-            errors.append(pincode_error)
-
     # Step 3: Parse Signals & Apply Fail-Open Defaults
     fallback_rto = DEFAULT_CATEGORY_RTO_RATES.get(category, 0.25)
     fallback_return = DEFAULT_CATEGORY_RETURN_RATES.get(category, 0.25)
@@ -148,7 +149,7 @@ def run_signal_agent(state: dict[str, Any]) -> dict[str, Any]:
     social_sentiment = _parse_float(raw_sentiment, 0.0)
 
     # Step 4: Schema Validation & Retry logic using stack for retry tracking
-    retry_stack = []  # Stack to track validation attempts
+    retry_stack: list[tuple[float, float]] = []  # Stack to track validation attempts
     max_retries = 1
 
     while len(retry_stack) <= max_retries:
@@ -203,7 +204,11 @@ def run_signal_agent(state: dict[str, Any]) -> dict[str, Any]:
     # Store in cache on success
     if signals_available:
         cache_data = signal_data.copy()
-        cache_data["_cached_errors"] = errors
+        # Only store signal agent's own errors (added after initial_error_count), not profile agent's validation errors
+        signal_agent_errors = errors[initial_error_count:]
+        deduction = round(max(0.0, signal_start_confidence - confidence_score), 4)
+        cache_data["_cached_errors"] = signal_agent_errors
+        cache_data["_cache_meta"] = {"deduction": deduction, "warnings": signal_agent_errors}
         set_cached_response(cache_key, cache_data)
 
     state["signal_data"] = signal_data
@@ -213,38 +218,39 @@ def run_signal_agent(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
-@lru_cache(maxsize=128)
-def _query_signals_db(customer_id: str, delivery_pincode: str) -> tuple[dict | None, dict | None]:
+def _query_signals_db(customer_id: str, order_id: str, delivery_pincode: str) -> dict | None:
     """
-    Query signals CSV with LRU cache for repeated lookups.
-    Returns (exact_match, fallback_match) tuple.
+    Query signals CSV for one exact order (customer_id + order_id).
+    Validates that the signal row pincode matches the request pincode.
+    Never reuses another order's signals. Returns None on any mismatch.
+    No caching - reads fresh each time to pick up data changes.
     """
-    exact_match = None
-    fallback_match = None
-
-    if not os.path.exists(SIGNALS_CSV):
-        return (None, None)
+    signals_csv = settings.SIGNALS_CSV
+    if not os.path.exists(signals_csv):
+        return None
 
     try:
-        with open(SIGNALS_CSV, encoding="utf-8") as f:
+        with open(signals_csv, encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                # Exact pincode match
-                if row.get("customer_id") == customer_id and row.get("delivery_pincode") == delivery_pincode:
-                    exact_match = dict(row)
-                    break  # Early exit on exact match
-                # Fallback: first customer match (for account_age, complaint, sentiment)
-                elif row.get("customer_id") == customer_id and fallback_match is None:
-                    fallback_match = dict(row)
+                if row.get("customer_id") == customer_id and row.get("order_id") == order_id:
+                    if str(row.get("delivery_pincode", "")) != str(delivery_pincode):
+                        return None
+                    return dict(row)
     except Exception:
-        pass  # Return (None, None) on error
+        pass  # Return None on error
 
-    return (exact_match, fallback_match)
+    return None
+
+
+def _clear_signal_cache() -> None:
+    """Clear LRU caches for testing purposes. Kept for compatibility."""
+    pass
 
 
 def _parse_events(events_str: str) -> list[str]:
     """Parse pipe-separated events using deque for efficient appends."""
-    events_deque = deque()
+    events_deque: deque[str] = deque()
     for e in events_str.split("|"):
         e = e.strip()
         if e:
@@ -283,9 +289,4 @@ def _is_valid_cached_signal(data: dict) -> bool:
     # Validate ranges
     if not (0.0 <= data["complaint_score"] <= 1.0):
         return False
-    return -1.0 <= data["social_sentiment"] <= 1.0
-
-
-def _clear_signal_cache() -> None:
-    """Clear LRU caches for testing purposes."""
-    _query_signals_db.cache_clear()
+    return bool(-1.0 <= data["social_sentiment"] <= 1.0)

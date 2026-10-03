@@ -26,13 +26,18 @@ RTO Risk Scorer evaluates every COD order at checkout-time using a **determinist
 
 
 
-## ✨ Recent Updates (v0.1.1)
+## ✨ Recent Updates (v0.3.0)
 
-- **Frontend Dashboard**: Built-in web UI at `/` (served by FastAPI)
-- **Model Upgrade**: Switched to `gemini-2.0-flash-lite` for faster LLM responses (~300-600ms)
-- **Static File Serving**: Frontend assets served at `/static/`
-- **All 81 tests passing** with ruff linting clean
-- **LangGraph 1.2+ compatibility** fixed (removed deprecated `retry_policy`)
+- **Two-Step Verification Flow**: Order/Customer ID verification before order details input
+- **Order/Customer Validation**: `/api/v1/verify-order` endpoint validates order_id + customer_id match
+- **Order Field Validation**: Validates order_value, category, payment_method, delivery_pincode against database
+- **Order/Customer Mismatch Detection**: Returns clear error with modal popup on mismatch
+- **Deduplication**: Fixed duplicate errors in audit trail
+- **LLM Timeout**: 1s → 15s for reliable narrative generation
+- **LLM Toggle**: `ENABLE_LLM_NARRATIVES` setting (default: false for fast mode)
+- **Signal Cache Fixed**: Fresh CSV reads on every request (no stale cache)
+- **Frontend Dashboard**: Two-step verification flow with test case dropdown
+- **All 81 tests passing** with ruff linting clean and mypy type checking clean
 
 
 
@@ -91,6 +96,30 @@ POST /api/v1/analyze
 
 **Score Calculation**: `risk_score = min(100.0, sum(triggered_weights))`
 
+
+### Order Field Validation (Profile Agent)
+
+The Profile Agent validates all order fields against the database record for the given `order_id`:
+
+| Field | Validation | Confidence Dock |
+|-------|------------|-----------------|
+| `customer_id` | Must match order's customer | -0.3 |
+| `order_value` | Must match DB (1 paisa tolerance) | -0.15 |
+| `category` | Exact match | -0.15 |
+| `payment_method` | Exact match | -0.15 |
+| `delivery_pincode` | Exact match | -0.15 |
+| `order_id` not found | Not in database | -0.15 |
+
+**Error Messages:**
+- `"Order ID {id} does not belong to customer {id}"`
+- `"Order ID {id} not found in database"`
+- `"Order value mismatch: expected {expected}, got {got}"`
+- `"Category mismatch: expected {expected}, got {got}"`
+- `"Payment method mismatch: expected {expected}, got {got}"`
+- `"Delivery pincode mismatch: expected {expected}, got {got}"`
+
+The order_id is the **primary key** - all other fields are validated against the database record for that order_id.
+
 ## Quick Start
 
 
@@ -123,21 +152,19 @@ Copy `.env.example` to `.env` and configure:
 
 ```env
 GEMINI_API_KEY=your_gemini_key_here
-GEMINI_MODEL=gemini-3.6-flash
+GEMINI_MODEL=gemini-3.1-flash-lite
 CACHE_TTL_SECONDS=86400
+ENABLE_LLM_NARRATIVES=false
 ```
 
-**Recommended Models** (by speed/cost):
+**LLM Narratives Toggle:**
 
+| Setting | Value | Behavior |
+|---------|-------|----------|
+| `ENABLE_LLM_NARRATIVES=false` (default) | Fast mode (~1-16ms) | Uses fallback narratives, no LLM calls |
+| `ENABLE_LLM_NARRATIVES=true` | LLM mode (~2-3s) | Rich LLM-generated narratives with 15s timeout |
 
-| Model                   | Speed     | Cost   | Best For                 |
-| ----------------------- | --------- | ------ | ------------------------ |
-| `gemini-2.0-flash-lite` | ⚡ Fastest | Lowest | Production (recommended) |
-| `gemini-1.5-flash-8b`   | Fast      | Low    | High volume              |
-| `gemini-1.5-pro`        | Medium    | Higher | Complex narratives       |
-
-
-> **Note**: `gemini-1.5-flash` is deprecated and returns 404. Use `gemini-2.0-flash-lite` instead.
+> **Note**: Requires valid `GEMINI_API_KEY` when enabled. Default is `false` for fast production mode.
 
 
 
@@ -179,10 +206,10 @@ uv run python -m evaluation.benchmark
 
 ### Endpoints
 
-
 | Method | Endpoint            | Description                 |
 | ------ | ------------------- | --------------------------- |
 | `GET`  | `/health`           | Health check                |
+| `POST` | `/api/v1/verify-order` | Verify order/customer match |
 | `POST` | `/api/v1/analyze`   | Analyze COD order risk      |
 | `GET`  | `/api/v1/metrics`   | Precision/Recall/F1 metrics |
 | `GET`  | `/api/v1/benchmark` | Full benchmark report       |
@@ -345,6 +372,41 @@ curl -X POST http://localhost:8000/api/v1/analyze \
 
 
 
+### Verify Order Endpoint
+
+```bash
+# Verify order and customer match before analysis
+curl -X POST http://localhost:8000/api/v1/verify-order \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order_id": "ORD_123456",
+    "customer_id": "CUST_78901"
+  }'
+```
+
+**Success Response** (200):
+```json
+{
+  "order_id": "ORD_123456",
+  "customer_id": "CUST_78901",
+  "order_value": 8500.00,
+  "category": "fashion",
+  "payment_method": "cod",
+  "pincode": "560001",
+  "order_data": {}
+}
+```
+
+**Error Response** (400):
+```json
+{
+  "detail": "Order ID ORD_123456 does not belong to customer CUST_78901"
+}
+```
+
+> **Use this endpoint** in the two-step web dashboard flow to validate order/customer before entering order details.
+
+
 #### 4. Health Check
 
 ```bash
@@ -390,9 +452,8 @@ curl http://localhost:8000/api/v1/benchmark
 
 | Mode                                       | Latency        | Notes                         |
 | ------------------------------------------ | -------------- | ----------------------------- |
-| **No LLM (fallback)**                      | **~5-10ms**    | Deterministic pipeline only   |
-| **LLM Enabled (gemini-2.0-flash-lite)**    | **~300-600ms** | First call; cached thereafter |
-| **LLM Cached**                             | **~5-10ms**    | Subsequent similar orders     |
+| **Fast Mode (ENABLE_LLM_NARRATIVES=false)** | **~1-16ms**    | Deterministic pipeline only   |
+| **LLM Enabled (gemini-3.1-flash-lite)**    | **~2-3s**      | 15s timeout; rich narratives  |
 | **Cache Warm (2nd request same customer)** | **~2-5ms**     | Profile + Signal cached       |
 
 
@@ -401,12 +462,12 @@ curl http://localhost:8000/api/v1/benchmark
 ### Caching Strategy
 
 - **Profile Cache**: 24hr TTL, keyed by `customer_id` (`{customer_id}_profile.json`)
-- **Signal Cache**: 24hr TTL, keyed by `customer_id + pincode` (`{customer_id}_{pincode}_signals.json`)
+- **Signal Cache**: 24hr TTL, keyed by `customer_id + pincode` (`{customer_id}_{pincode}_signals.json`) — reads CSV fresh each request
 - **LLM Narrative Cache**: Not yet implemented (planned)
 
 
 
-### Latency Breakdown (Cold Start, No LLM)
+### Latency Breakdown (Cold Start, Fast Mode)
 
 
 | Component                                | Time     |
@@ -506,20 +567,28 @@ uv run pytest tests/test_pipeline_integration.py -v
 
 ## Web Dashboard
 
-The built-in frontend provides a real-time risk assessment UI:
+The built-in frontend provides a real-time risk assessment UI with a **two-step verification flow**:
 
 **Access**: [http://localhost:8000](http://localhost:8000) (after starting server)
 
-**Features**:
+**Two-Step Flow**:
+1. **Step 1 - Verify**: Enter Order ID + Customer ID → Click "Verify & Continue"
+   - Validates order/customer match against database
+   - Shows error modal if mismatch
+2. **Step 2 - Analyze**: Shows verified order details (read-only) + editable fields for remaining inputs
+   - Click "Analyze Risk" to get risk assessment
 
-- Order input form with validation
+**Features**:
+- Order/Customer ID verification against database
 - Live risk score with color-coded badge (Green/Yellow/Red)
 - Recommendation badge (Auto-Approve / Manual Review / Auto-Reject)
 - Confidence progress bar
 - Expandable sections: Order Summary, Risk Assessment, Market Context, Key Concerns, Mitigations, Audit Trail
 - Processing time display
+- Test case dropdown for quick testing
+- Modal popup for validation errors (order/customer mismatch, field mismatches)
 
-**Architecture**: Static files served via FastAPI at `/static/`, API calls to `/api/v1/analyze`
+**Architecture**: Static files served via FastAPI at `/static/`, API calls to `/api/v1/verify-order` and `/api/v1/analyze`
 
 ---
 

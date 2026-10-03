@@ -7,7 +7,7 @@ with ground truth labels for evaluation.
 import csv
 import random
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 
@@ -63,7 +63,7 @@ def _generate_customer_type() -> CustomerType:
     return random.choices(
         ["good", "occasional_returner", "serial_returner", "fraudster"],
         weights=[0.60, 0.25, 0.10, 0.05],
-    )[0]
+    )[0]  # type: ignore[return-value]
 
 
 def _generate_customer_profile(customer_id: str, customer_type: CustomerType) -> dict:
@@ -203,11 +203,200 @@ def _generate_signals(order: dict, customer: dict) -> dict:
     }
 
 
+# Predictable test cases for manual testing - appended after random generation
+PREDICTABLE_TEST_CASES: list[dict[str, Any]] = [
+    {
+        "customer_id": "CUST_GOOD_01",
+        "company_name": "Good Customer Inc",
+        "customer_type": "good",
+        "total_orders": 25,
+        "returns": 1,
+        "return_rate": 0.04,
+        "avg_order_value": 1500.0,
+        "account_age_days": 365,
+        "complaint_score": 0.05,
+        "social_sentiment": 0.80,
+        "split": "test",
+        "orders": [
+            {
+                "order_id": "ORD_000001",
+                "customer_id": "CUST_GOOD_01",
+                "order_value": 2000.0,
+                "category": "electronics",
+                "payment_method": "upi",
+                "delivery_pincode": "110001",
+                "pincode_rto_rate": 0.15,
+                "recent_returns_30d": 0,
+                "ground_truth": "legit",
+                "rto_probability": 0.05,
+                "split": "test",
+            }
+        ],
+        "signals": {
+            "pincode_rto_rate": 0.15,
+            "category_return_rate": 0.18,
+            "complaint_score": 0.05,
+            "social_sentiment": 0.80,
+            "recent_events": "None",
+            "account_age_days": 365,
+        }
+    },
+    {
+        "customer_id": "CUST_SERIAL_01",
+        "company_name": "Serial Returner Ltd",
+        "customer_type": "serial_returner",
+        "total_orders": 20,
+        "returns": 14,
+        "return_rate": 0.70,
+        "avg_order_value": 3000.0,
+        "account_age_days": 60,
+        "complaint_score": 0.60,
+        "social_sentiment": -0.20,
+        "split": "test",
+        "orders": [
+            {
+                "order_id": "ORD_000002",
+                "customer_id": "CUST_SERIAL_01",
+                "order_value": 8000.0,
+                "category": "fashion",
+                "payment_method": "cod",
+                "delivery_pincode": "560001",
+                "pincode_rto_rate": 0.35,
+                "recent_returns_30d": 4,
+                "ground_truth": "rto",
+                "rto_probability": 0.85,
+                "split": "test",
+            }
+        ],
+        "signals": {
+            "pincode_rto_rate": 0.35,
+            "category_return_rate": 0.35,
+            "complaint_score": 0.60,
+            "social_sentiment": -0.20,
+            "recent_events": "High RTO pincode|Customer complaints detected",
+            "account_age_days": 60,
+        }
+    },
+    {
+        "customer_id": "CUST_FRAUD_01",
+        "company_name": "Fraudster Corp",
+        "customer_type": "fraudster",
+        "total_orders": 5,
+        "returns": 5,
+        "return_rate": 1.0,
+        "avg_order_value": 12000.0,
+        "account_age_days": 3,
+        "complaint_score": 0.90,
+        "social_sentiment": -0.80,
+        "split": "test",
+        "orders": [
+            {
+                "order_id": "ORD_000003",
+                "customer_id": "CUST_FRAUD_01",
+                "order_value": 15000.0,
+                "category": "electronics",
+                "payment_method": "cod",
+                "delivery_pincode": "700002",
+                "pincode_rto_rate": 0.50,
+                "recent_returns_30d": 3,
+                "ground_truth": "rto",
+                "rto_probability": 0.95,
+                "split": "test",
+            }
+        ],
+        "signals": {
+            "pincode_rto_rate": 0.50,
+            "category_return_rate": 0.18,
+            "complaint_score": 0.90,
+            "social_sentiment": -0.80,
+            "recent_events": "High RTO pincode|Customer complaints detected|Negative social mentions",
+            "account_age_days": 3,
+        }
+    },
+    {
+        "customer_id": "CUST_OCCASIONAL_01",
+        "company_name": "Occasional Returner",
+        "customer_type": "occasional_returner",
+        "total_orders": 10,
+        "returns": 2,
+        "return_rate": 0.20,
+        "avg_order_value": 2500.0,
+        "account_age_days": 120,
+        "complaint_score": 0.25,
+        "social_sentiment": 0.30,
+        "split": "test",
+        "orders": [
+            {
+                "order_id": "ORD_000004",
+                "customer_id": "CUST_OCCASIONAL_01",
+                "order_value": 6000.0,
+                "category": "home",
+                "payment_method": "cod",
+                "delivery_pincode": "400001",
+                "pincode_rto_rate": 0.18,
+                "recent_returns_30d": 1,
+                "ground_truth": "legit",
+                "rto_probability": 0.25,
+                "split": "test",
+            }
+        ],
+        "signals": {
+            "pincode_rto_rate": 0.18,
+            "category_return_rate": 0.22,
+            "complaint_score": 0.25,
+            "social_sentiment": 0.30,
+            "recent_events": "None",
+            "account_age_days": 120,
+        }
+    },
+    {
+        "customer_id": "CUST_NEW_COD_01",
+        "company_name": "New COD Customer",
+        "customer_type": "good",
+        "total_orders": 1,
+        "returns": 0,
+        "return_rate": 0.0,
+        "avg_order_value": 8000.0,
+        "account_age_days": 5,
+        "complaint_score": 0.10,
+        "social_sentiment": 0.50,
+        "split": "test",
+        "orders": [
+            {
+                "order_id": "ORD_000005",
+                "customer_id": "CUST_NEW_COD_01",
+                "order_value": 8000.0,
+                "category": "beauty",
+                "payment_method": "cod",
+                "delivery_pincode": "110001",
+                "pincode_rto_rate": 0.15,
+                "recent_returns_30d": 0,
+                "ground_truth": "legit",
+                "rto_probability": 0.15,
+                "split": "test",
+            }
+        ],
+        "signals": {
+            "pincode_rto_rate": 0.15,
+            "category_return_rate": 0.15,
+            "complaint_score": 0.10,
+            "social_sentiment": 0.50,
+            "recent_events": "None",
+            "account_age_days": 5,
+        }
+    },
+]
+
+
 def generate_dataset(
     num_customers: int = 500,
     output_dir: str = "synthetic_data",
 ) -> tuple[Path, Path, Path]:
-    """Generate 500 customers and orders split into 400 train and 100 held-out test records."""
+    """Generate customers and orders with a train/test split.
+
+    The documented 500-customer dataset uses a 400/100 split; any other
+    size uses an 80/20 split.
+    """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -215,14 +404,18 @@ def generate_dataset(
     orders: list[dict] = []
     signals: list[dict] = []
 
-    order_counter = 1
+    # Reserve order IDs 1-5 for predictable test cases (ORD_000001-ORD_000005)
+    test_case_order_count = len(PREDICTABLE_TEST_CASES)
+    order_counter = test_case_order_count + 1
+    train_count = 400 if num_customers == 500 else int(num_customers * 0.8)
     for c_idx in range(1, num_customers + 1):
         cust_id = _generate_customer_id(c_idx)
         c_type = _generate_customer_type()
         customer = _generate_customer_profile(cust_id, c_type)
 
-        # Mark dataset split: 400 train, 100 held-out test set
-        customer["split"] = "train" if c_idx <= 400 else "test"
+        # Mark dataset split: 400/100 for the documented 500-customer
+        # dataset, otherwise an 80/20 split.
+        customer["split"] = "train" if c_idx <= train_count else "test"
         customers.append(customer)
 
         # Generate orders per customer
@@ -237,6 +430,20 @@ def generate_dataset(
 
             signal = _generate_signals(order, customer)
             signals.append(signal)
+
+    # Append predictable test cases
+    for tc in PREDICTABLE_TEST_CASES:
+        customer_data = {k: v for k, v in tc.items() if k not in ("orders", "signals")}
+        customers.append(customer_data)
+
+        for order in tc["orders"]:
+            orders.append(order)
+
+        signal_data = tc["signals"].copy()
+        signal_data["customer_id"] = tc["customer_id"]
+        signal_data["order_id"] = tc["orders"][0]["order_id"]
+        signal_data["delivery_pincode"] = tc["orders"][0]["delivery_pincode"]
+        signals.append(signal_data)
 
     # Write customers.csv
     customers_file = output_path / "customers.csv"
@@ -273,10 +480,24 @@ def generate_dataset(
 
     rto_count = sum(1 for o in orders if o["ground_truth"] == "rto")
     test_orders = sum(1 for o in orders if o["split"] == "test")
+    train_customers = sum(1 for c in customers if c["split"] == "train")
+    test_customers = sum(1 for c in customers if c["split"] == "test")
 
-    print(f"Generated {len(customers)} customers ({num_customers - 100} train / 100 test), {len(orders)} orders ({test_orders} test orders).")
+    print(f"Generated {len(customers)} customers ({train_customers} train / {test_customers} test), {len(orders)} orders ({test_orders} test orders).")
     print(f"Overall RTO rate: {rto_count}/{len(orders)} ({rto_count/len(orders):.1%})")
     print(f"Files written to {output_path.resolve()}")
+
+    # Clear agent caches so new data is picked up
+    try:
+        from agents.profile_agent import _clear_profile_cache
+        _clear_profile_cache()
+    except ImportError:
+        pass
+    try:
+        from agents.signal_agent import _clear_signal_cache
+        _clear_signal_cache()
+    except ImportError:
+        pass
 
     return customers_file, orders_file, signals_file
 

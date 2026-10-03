@@ -7,12 +7,18 @@ import pytest
 from agents.signal_agent import run_signal_agent
 from core.cache import clear_cache, get_cached_response, set_cached_response
 
-TEST_SIGNALS_CSV = "synthetic_data/signals.csv"
+
+def _test_signals_csv() -> str:
+    from core.config import settings
+
+    return settings.SIGNALS_CSV
 
 @pytest.fixture(autouse=True)
 def setup_teardown_csv():
     """Setup a controlled synthetic signal database for reproducible unit testing."""
-    os.makedirs("synthetic_data", exist_ok=True)
+    from core.config import settings
+
+    os.makedirs(os.path.dirname(settings.SIGNALS_CSV), exist_ok=True)
     clear_cache()
 
     headers = [
@@ -27,7 +33,7 @@ def setup_teardown_csv():
         ["CUST_00004", "ORD_0004", "110002", "0.22", "0.28", "0.10", "0.10", "None", "120"],
     ]
 
-    with open(TEST_SIGNALS_CSV, "w", newline="", encoding="utf-8") as f:
+    with open(_test_signals_csv(), "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(headers)
         writer.writerows(rows)
@@ -39,6 +45,7 @@ def base_state():
     return {
         "company_name": "Customer_CUST_00001",
         "customer_id": "CUST_00001",
+        "order_id": "ORD_0001",
         "delivery_pincode": "110001",
         "category": "fashion",
         "confidence_score": 1.0,
@@ -63,6 +70,7 @@ def test_signal_agent_success(base_state):
 # 2. Parsing Pipe-Separated Events
 def test_signal_agent_parse_multiple_events(base_state):
     base_state["customer_id"] = "CUST_00002"
+    base_state["order_id"] = "ORD_0002"
     base_state["delivery_pincode"] = "700002"
     res = run_signal_agent(base_state)
     sig = res["signal_data"]
@@ -70,7 +78,7 @@ def test_signal_agent_parse_multiple_events(base_state):
 
 # 3. Cache Hit Execution Path
 def test_signal_agent_cache_hit(base_state):
-    cache_key = f"{base_state['customer_id']}_{base_state['delivery_pincode']}_signals"
+    cache_key = f"v1:{base_state['customer_id']}_{base_state['order_id']}_{base_state['delivery_pincode']}_{base_state['category']}_signals"
     cached_payload = {
         "pincode_rto_rate": 0.10,
         "category_return_rate": 0.20,
@@ -88,7 +96,7 @@ def test_signal_agent_cache_hit(base_state):
 
 # 4. Cache Miss Handling
 def test_signal_agent_cache_miss(base_state):
-    cache_key = f"{base_state['customer_id']}_{base_state['delivery_pincode']}_signals"
+    cache_key = f"v1:{base_state['customer_id']}_{base_state['order_id']}_{base_state['delivery_pincode']}_{base_state['category']}_signals"
     assert get_cached_response(cache_key) is None
     res = run_signal_agent(base_state)
     assert res["signal_data"]["signals_available"] is True
@@ -119,6 +127,7 @@ def test_signal_agent_fail_open_neutral_defaults(base_state):
 # 8. Hostile Signals Docking (complaint_score > 0.7)
 def test_signal_agent_hostile_signals_docking(base_state):
     base_state["customer_id"] = "CUST_00002"
+    base_state["order_id"] = "ORD_0002"
     base_state["delivery_pincode"] = "700002"
     base_state["transaction_profile"]["account_age_days"] = 45
     res = run_signal_agent(base_state)
@@ -128,6 +137,7 @@ def test_signal_agent_hostile_signals_docking(base_state):
 # 9. Boundary Test: Complaint Score Exact Threshold 0.70
 def test_signal_agent_hostile_boundary_exact(base_state):
     base_state["customer_id"] = "CUST_00003"
+    base_state["order_id"] = "ORD_0003"
     base_state["delivery_pincode"] = "560001"
     base_state["transaction_profile"]["account_age_days"] = 10
     res = run_signal_agent(base_state)
@@ -137,6 +147,7 @@ def test_signal_agent_hostile_boundary_exact(base_state):
 # 10. Boundary Test: Social Sentiment Threshold -0.40
 def test_signal_agent_sentiment_boundary(base_state):
     base_state["customer_id"] = "CUST_00003"
+    base_state["order_id"] = "ORD_0003"
     base_state["delivery_pincode"] = "560001"
     res = run_signal_agent(base_state)
     assert res["signal_data"]["social_sentiment"] == -0.40
@@ -169,12 +180,12 @@ def test_signal_agent_db_timeout(base_state):
 # 14. Schema Bounds Clamping & Retry Test
 def test_signal_agent_schema_clamping(base_state):
     with patch("agents.signal_agent._query_signals_db") as mock_query:
-        mock_query.return_value = ({
-            "customer_id": "CUST_00001", "delivery_pincode": "110001",
+        mock_query.return_value = {
+            "customer_id": "CUST_00001", "order_id": "ORD_0001", "delivery_pincode": "110001",
             "pincode_rto_rate": "0.2", "category_return_rate": "0.2",
             "complaint_score": "1.5", "social_sentiment": "-2.5",
             "recent_events": "None", "account_age_days": "100"
-        }, None)
+        }
         res = run_signal_agent(base_state)
         assert res["signal_data"]["complaint_score"] == 1.0
         assert res["signal_data"]["social_sentiment"] == -1.0
@@ -182,16 +193,17 @@ def test_signal_agent_schema_clamping(base_state):
 # 15. Cumulative Confidence Docking
 def test_signal_agent_cumulative_docking(base_state):
     base_state["customer_id"] = "CUST_00002"  # Hostile signals (-0.05)
+    base_state["order_id"] = "ORD_0002"
     base_state["delivery_pincode"] = "700002"
     base_state["transaction_profile"]["account_age_days"] = 3  # Mismatch (-0.1)
 
     with patch("agents.signal_agent._query_signals_db") as mock_query:
-        mock_query.return_value = ({
-            "customer_id": "CUST_00002", "delivery_pincode": "700002",
+        mock_query.return_value = {
+            "customer_id": "CUST_00002", "order_id": "ORD_0002", "delivery_pincode": "700002",
             "pincode_rto_rate": "0.50", "category_return_rate": "0.18",
             "complaint_score": "0.85", "social_sentiment": "-0.50",
             "recent_events": "High RTO pincode|Negative social mentions", "account_age_days": "45"
-        }, None)
+        }
 
         res = run_signal_agent(base_state)
         # 1.0 - 0.05 (hostile) - 0.1 (mismatch) = 0.85
@@ -229,12 +241,12 @@ def test_signal_agent_none_profile_account_age(base_state):
 # 20. Corrupted Numeric Data Handling
 def test_signal_agent_corrupted_numeric_data(base_state):
     with patch("agents.signal_agent._query_signals_db") as mock_query:
-        mock_query.return_value = ({
-            "customer_id": "CUST_00001", "delivery_pincode": "110001",
+        mock_query.return_value = {
+            "customer_id": "CUST_00001", "order_id": "ORD_0001", "delivery_pincode": "110001",
             "pincode_rto_rate": "invalid_number", "category_return_rate": "invalid",
             "complaint_score": "corrupt", "social_sentiment": "bad",
             "recent_events": "None", "account_age_days": "n/a"
-        }, None)
+        }
         res = run_signal_agent(base_state)
         # Defaults applied gracefully
         assert res["signal_data"]["pincode_rto_rate"] == 0.35
