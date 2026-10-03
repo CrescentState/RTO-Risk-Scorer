@@ -26,18 +26,17 @@ RTO Risk Scorer evaluates every COD order at checkout-time using a **determinist
 
 
 
-## ✨ Recent Updates (v0.3.0)
+## Current State
 
-- **Two-Step Verification Flow**: Order/Customer ID verification before order details input
-- **Order/Customer Validation**: `/api/v1/verify-order` endpoint validates order_id + customer_id match
-- **Order Field Validation**: Validates order_value, category, payment_method, delivery_pincode against database
-- **Order/Customer Mismatch Detection**: Returns clear error with modal popup on mismatch
-- **Deduplication**: Fixed duplicate errors in audit trail
-- **LLM Timeout**: 1s → 15s for reliable narrative generation
-- **LLM Toggle**: `ENABLE_LLM_NARRATIVES` setting (default: false for fast mode)
-- **Signal Cache Fixed**: Fresh CSV reads on every request (no stale cache)
-- **Frontend Dashboard**: Two-step verification flow with test case dropdown
-- **All 81 tests passing** with ruff linting clean and mypy type checking clean
+- **Two routes**: `/` is the user flow (verify → read-only canonical details → result); `/dev` is the developer console (test cases, endpoint list, live metrics/benchmark panels, raw request/response viewer). Shared flow lives in `frontend/shared.js`.
+- **Order integrity gate**: `/api/v1/analyze` rejects altered order details with HTTP 409 (`{message, code, mismatches}`) before any pipeline runs. Stable codes: `CUSTOMER_NOT_FOUND`, `ORDER_NOT_FOUND`, `CUSTOMER_MISMATCH`, `ORDER_FIELD_MISMATCH`.
+- **Canonical scoring**: the risk agent scores profile fields; signals are scoped to one exact order (`customer_id` + `order_id`) with pincode validation and never reused across orders.
+- **Cache correctness**: versioned keys (`v1:{customer}_{order}_profile`, `v1:{customer}_{order}_{pincode}_{category}_signals`) store each agent's confidence deduction and warnings and reapply them on hits, so cold and warm requests return identical score, confidence, action, and warnings. Errors are a plain list — each unique warning appears once.
+- **Benchmark service**: `evaluation/service.py` computes the real benchmark once with an async single-flight lock, caches it for one hour, and invalidates on dataset file changes. `/metrics` and `/benchmark` share it; LLM narratives are forced off during benchmarks. No mock fallbacks — unavailable data returns a clear service error.
+- **Test isolation**: all test datasets generate under `tmp_path`; tracked CSVs are never rewritten by the suite. CI runs Python 3.11 and 3.12 (`requires-python = ">=3.11,<3.13"`).
+- **81 tests passing**, ruff clean, mypy clean, JS syntax clean.
+
+> **Security note**: `.env.example` ships a placeholder key. A Gemini key was previously committed to this repo's history — rotate any exposed credentials in the provider dashboard before deploying. Deployment is blocked until rotation is confirmed.
 
 
 
@@ -49,7 +48,7 @@ RTO Risk Scorer evaluates every COD order at checkout-time using a **determinist
 └─────────────────────────────────────────────────────────────────┘
 
 POST /api/v1/analyze
-│
+│  (409 gate: order/customer/fields must match the stored record)
 ▼
 ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
 │  Profile Agent   │───▶│  Signal Agent    │───▶│   Risk Agent     │───▶│ Synthesis Agent  │
@@ -63,18 +62,15 @@ POST /api/v1/analyze
                         └──────────────────┘
 ```
 
-
-
 ### Agent Details
 
 
 | Agent         | Input                          | Output              | Key Logic                                                     |
 | ------------- | ------------------------------ | ------------------- | ------------------------------------------------------------- |
 | **Profile**   | Customer ID, Order details     | Transaction Profile | Historical orders, return rate, account age, recent returns   |
-| **Signal**    | Customer ID, Pincode, Category | External Signals    | Pincode RTO rate, category return rate, complaints, sentiment |
-| **Risk**      | Profile + Signals              | Risk Score (0-100)  | 9 deterministic weighted rules (see below)                    |
-| **Synthesis** | All prior outputs              | Action Brief        | LLM narratives + deterministic override                       |
-
+| **Signal**    | Customer ID, Order ID, Pincode, Category | External Signals | Exact-order signals only; category defaults on miss; pincode validated |
+| **Risk**      | Profile + Signals              | Risk Score (0-100)  | 9 deterministic weighted rules over canonical profile fields (see below) |
+| **Synthesis** | All prior outputs              | Action Brief        | Brief sections + deterministic override (confidence < 0.5 → Manual Review) |
 
 
 
@@ -96,29 +92,18 @@ POST /api/v1/analyze
 
 **Score Calculation**: `risk_score = min(100.0, sum(triggered_weights))`
 
+### Order Integrity Gate (`/api/v1/analyze`)
 
-### Order Field Validation (Profile Agent)
+Before the pipeline runs, the request is checked against the canonical stored order (shared lookup in `core/orders.py`, used identically by verify, analyze, and test-cases):
 
-The Profile Agent validates all order fields against the database record for the given `order_id`:
+| Check | Failure code (HTTP 409) |
+|-------|-------------------------|
+| Customer not in database | `CUSTOMER_NOT_FOUND` |
+| Order not in database | `ORDER_NOT_FOUND` |
+| Order belongs to another customer | `CUSTOMER_MISMATCH` |
+| `order_value` (₹0.01 tolerance), `category`, `payment_method`, `delivery_pincode` differ | `ORDER_FIELD_MISMATCH` + `mismatches: [{field, expected, actual}]` |
 
-| Field | Validation | Confidence Dock |
-|-------|------------|-----------------|
-| `customer_id` | Must match order's customer | -0.3 |
-| `order_value` | Must match DB (1 paisa tolerance) | -0.15 |
-| `category` | Exact match | -0.15 |
-| `payment_method` | Exact match | -0.15 |
-| `delivery_pincode` | Exact match | -0.15 |
-| `order_id` not found | Not in database | -0.15 |
-
-**Error Messages:**
-- `"Order ID {id} does not belong to customer {id}"`
-- `"Order ID {id} not found in database"`
-- `"Order value mismatch: expected {expected}, got {got}"`
-- `"Category mismatch: expected {expected}, got {got}"`
-- `"Payment method mismatch: expected {expected}, got {got}"`
-- `"Delivery pincode mismatch: expected {expected}, got {got}"`
-
-The order_id is the **primary key** - all other fields are validated against the database record for that order_id.
+Non-finite or non-positive `order_value` values (`NaN`, `inf`) are rejected with HTTP 422, as are pattern violations, with readable `field: message` detail strings.
 
 ## Quick Start
 
@@ -126,8 +111,8 @@ The order_id is the **primary key** - all other fields are validated against the
 
 ### Prerequisites
 
-- Python 3.11+
-- Google Gemini API key (optional, for LLM narratives)
+- Python 3.11 or 3.12
+- Google Gemini API key (optional, only for LLM narratives)
 
 
 
@@ -151,7 +136,7 @@ pip install -e ".[dev]"
 Copy `.env.example` to `.env` and configure:
 
 ```env
-GEMINI_API_KEY=your_gemini_key_here
+GEMINI_API_KEY=your-gemini-api-key-here
 GEMINI_MODEL=gemini-3.1-flash-lite
 CACHE_TTL_SECONDS=86400
 ENABLE_LLM_NARRATIVES=false
@@ -161,19 +146,22 @@ ENABLE_LLM_NARRATIVES=false
 
 | Setting | Value | Behavior |
 |---------|-------|----------|
-| `ENABLE_LLM_NARRATIVES=false` (default) | Fast mode (~1-16ms) | Uses fallback narratives, no LLM calls |
-| `ENABLE_LLM_NARRATIVES=true` | LLM mode (~2-3s) | Rich LLM-generated narratives with 15s timeout |
+| `ENABLE_LLM_NARRATIVES=false` (default) | Fast mode | Deterministic pipeline only, fallback narratives, no LLM calls |
+| `ENABLE_LLM_NARRATIVES=true` | LLM mode | LLM-generated narratives with 15s timeout (never changes the score) |
 
-> **Note**: Requires valid `GEMINI_API_KEY` when enabled. Default is `false` for fast production mode.
+> **Note**: Requires a valid, rotated `GEMINI_API_KEY` when enabled. Default is `false` for fast production mode (also set explicitly in `render.yaml`).
 
 
 
 ### Generate Synthetic Data
 
 ```bash
-# Generate 500 customers (400 train / 100 test) with orders and signals
+# Generate 505 customers (400 train / 105 test) with orders and signals,
+# including 5 predictable test cases (ORD_000001-ORD_000005)
 uv run python -m synthetic_data.generator
 ```
+
+Arbitrary sizes use an 80/20 train/test split; the documented 500-customer dataset uses 400/100 plus the 5 predictable cases.
 
 
 
@@ -187,14 +175,14 @@ uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
 docker-compose up --build
 ```
 
-**Web Dashboard**: Open [http://localhost:8000](http://localhost:8000) in browser after starting server.
-
+**User page**: [http://localhost:8000](http://localhost:8000) — verify → result.
+**Developer console**: [http://localhost:8000/dev](http://localhost:8000/dev) — test cases, metrics, benchmark, raw traffic viewer.
 **API Docs**: Swagger UI at [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ### Run Benchmark
 
 ```bash
-# Run full benchmark on held-out test set (100 test customers)
+# Full async benchmark on the held-out test set (cached 1h, shared with /metrics)
 uv run python -m evaluation.benchmark
 ```
 
@@ -206,14 +194,17 @@ uv run python -m evaluation.benchmark
 
 ### Endpoints
 
-| Method | Endpoint            | Description                 |
-| ------ | ------------------- | --------------------------- |
-| `GET`  | `/health`           | Health check                |
-| `POST` | `/api/v1/verify-order` | Verify order/customer match |
-| `POST` | `/api/v1/analyze`   | Analyze COD order risk      |
-| `GET`  | `/api/v1/metrics`   | Precision/Recall/F1 metrics |
-| `GET`  | `/api/v1/benchmark` | Full benchmark report       |
-
+| Method | Endpoint               | Description                              |
+| ------ | ---------------------- | ---------------------------------------- |
+| `GET`  | `/`                    | User page (verify → result)              |
+| `GET`  | `/dev`                 | Developer console (test cases + inspect) |
+| `GET`  | `/health`              | Health check                             |
+| `GET`  | `/docs`                | Swagger UI                               |
+| `POST` | `/api/v1/verify-order` | Verify order/customer, return canonical order data |
+| `POST` | `/api/v1/analyze`      | Analyze COD order risk (409-gated)       |
+| `GET`  | `/api/v1/test-cases`   | Predictable test cases with expected risk levels |
+| `GET`  | `/api/v1/metrics`      | Precision/Recall/F1 metrics (cached benchmark subset) |
+| `GET`  | `/api/v1/benchmark`    | Full benchmark report (cached)           |
 
 
 
@@ -224,33 +215,34 @@ POST /api/v1/analyze
 Content-Type: application/json
 
 {
-  "order_id": "ORD_123456",
-  "customer_id": "CUST_78901",
-  "order_value": 8500.00,
-  "category": "fashion",
-  "payment_method": "cod",
-  "delivery_pincode": "560001"
+  "order_id": "ORD_000001",
+  "customer_id": "CUST_GOOD_01",
+  "order_value": 2000.00,
+  "category": "electronics",
+  "payment_method": "upi",
+  "delivery_pincode": "110001"
 }
 ```
 
+Values must match the stored order record (see integrity gate); `category`/`payment_method` are case-insensitive, surrounding whitespace is trimmed.
 
 
-### Valid Test Customer IDs (from synthetic data)
 
-Use these customer IDs from the test set (100 customers, IDs `CUST_00401`–`CUST_00500`):
+### Predictable Test Cases
 
-
-| Customer ID  | Profile                            | Expected Risk              |
-| ------------ | ---------------------------------- | -------------------------- |
-| `CUST_00401` | Good (low returns, old account)    | **Low** (Auto-Approve)     |
-| `CUST_00402` | Good                               | **Low** (Auto-Approve)     |
-| `CUST_00403` | Serial Returner (high return rate) | **High** (Auto-Reject)     |
-| `CUST_00404` | Occasional Returner                | **Medium** (Manual Review) |
-| `CUST_00405` | Good                               | **Low** (Auto-Approve)     |
-| `CUST_00410` | Serial Returner                    | **High** (Auto-Reject)     |
+Reserved orders `ORD_000001`–`ORD_000005` (expected levels computed with the same shared rule engine as the pipeline):
 
 
-> **Full list**: Check `synthetic_data/customers.csv` where `split=test`
+| Order | Customer (Company) | Profile | Expected |
+| ----- | ------------------ | ------- | -------- |
+| `ORD_000001` | `CUST_GOOD_01` (Good Customer Inc) | good, 25 orders, 4% returns | **Auto-Approve** |
+| `ORD_000002` | `CUST_SERIAL_01` (Serial Returner Ltd) | serial_returner, 70% returns | **Auto-Reject** |
+| `ORD_000003` | `CUST_FRAUD_01` (Fraudster Corp) | fraudster, 100% returns, 3-day account | **Auto-Reject** |
+| `ORD_000004` | `CUST_OCCASIONAL_01` (Occasional Returner) | occasional_returner, 20% returns | **Auto-Approve** |
+| `ORD_000005` | `CUST_NEW_COD_01` (New COD Customer) | good, 1 order, 5-day account, COD ₹8000 | **Manual Review** |
+
+
+> Pick these from the dropdown on the [/dev](#) console, or query `GET /api/v1/test-cases`.
 
 
 
@@ -264,111 +256,112 @@ Use these customer IDs from the test set (100 customers, IDs `CUST_00401`–`CUS
 curl -X POST http://localhost:8000/api/v1/analyze \
   -H "Content-Type: application/json" \
   -d '{
-    "order_id": "ORD_123456",
-    "customer_id": "CUST_00401",
-    "order_value": 3500,
-    "category": "fashion",
-    "payment_method": "upi",
-    "delivery_pincode": "560001"
-  }'
-```
-
-**Expected Response**:
-
-```json
-{
-  "risk_score": 0.0,
-  "recommendation": "Auto-Approve",
-  "confidence_score": 1.0,
-  "risk_factors": [],
-  "action_brief": {
-    "recommended_action": "Auto-Approve",
-    "order_summary": "Order analysis pending due to system error.",
-    "risk_assessment": "Risk computed deterministically. Narrative unavailable.",
-    "market_context": "System degradation detected.",
-    "mitigation_suggestions": ["Review order manually."],
-    "key_concerns": ["LLM synthesis pipeline error encountered."]
-  },
-  "processing_time_ms": 8
-}
-```
-
-
-
-#### 2. High Risk Order (Auto-Reject) - Serial Returner + COD High Value
-
-```bash
-curl -X POST http://localhost:8000/api/v1/analyze \
-  -H "Content-Type: application/json" \
-  -d '{
-    "order_id": "ORD_123457",
-    "customer_id": "CUST_00403",
-    "order_value": 8500,
+    "order_id": "ORD_000001",
+    "customer_id": "CUST_GOOD_01",
+    "order_value": 2000,
     "category": "electronics",
-    "payment_method": "cod",
+    "payment_method": "upi",
     "delivery_pincode": "110001"
   }'
 ```
 
-**Expected Response**:
+**Response** (verified live output):
 
 ```json
 {
-  "risk_score": 80.0,
-  "recommendation": "Auto-Reject",
+  "order_id": "ORD_000001",
+  "customer_id": "CUST_GOOD_01",
+  "company_name": "Good Customer Inc",
+  "risk_score": 0.0,
+  "recommendation": "Auto-Approve",
   "confidence_score": 1.0,
-  "risk_factors": [
-    "Serial returner (rate: 78%)",
-    "Return velocity spike (4 in 30d)",
-    "COD high-value order",
-    "High-RTO category (34%)"
-  ],
+  "risk_data": {
+    "risk_score": 0.0,
+    "risk_factors": [],
+    "risk_narrative": "Risk assessment based on transaction history and delivery signals.",
+    "recommendation": "Auto-Approve"
+  },
   "action_brief": {
-    "recommended_action": "Auto-Reject",
     "order_summary": "Order analysis pending due to system error.",
     "risk_assessment": "Risk computed deterministically. Narrative unavailable.",
     "market_context": "System degradation detected.",
     "mitigation_suggestions": ["Review order manually."],
-    "key_concerns": ["LLM synthesis pipeline error encountered."]
+    "key_concerns": ["LLM synthesis pipeline error encountered."],
+    "recommended_action": "Auto-Approve"
   },
-  "processing_time_ms": 10
+  "audit_trail": [],
+  "processing_time_ms": 18
 }
 ```
 
+> The fallback `action_brief` prose above appears when `ENABLE_LLM_NARRATIVES=false`. With a valid key and LLM mode on, the same fields carry model-generated narratives; score, factors, and recommendation are identical either way.
 
 
-#### 3. Medium Risk Order (Manual Review) - New Customer + COD
+
+#### 2. High Risk Order (Auto-Reject) — Serial Returner + COD High Value
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/analyze \
   -H "Content-Type: application/json" \
   -d '{
-    "order_id": "ORD_123458",
-    "customer_id": "CUST_00404",
-    "order_value": 6500,
-    "category": "home",
+    "order_id": "ORD_000003",
+    "customer_id": "CUST_FRAUD_01",
+    "order_value": 15000,
+    "category": "electronics",
     "payment_method": "cod",
-    "delivery_pincode": "400001"
+    "delivery_pincode": "700002"
   }'
 ```
 
-**Expected Response**:
+**Response** (verified live output, brief prose trimmed):
 
 ```json
 {
-  "risk_score": 15.0,
-  "recommendation": "Auto-Approve",
-  "confidence_score": 0.9,
-  "risk_factors": ["COD high-value order"],
-  "action_brief": {
-    "recommended_action": "Auto-Approve",
-    ...
-  },
-  "processing_time_ms": 9
+  "risk_score": 100.0,
+  "recommendation": "Auto-Reject",
+  "confidence_score": 0.95,
+  "risk_data": {
+    "risk_score": 100.0,
+    "risk_factors": [
+      "Serial returner (rate: 100%)",
+      "COD high-value order",
+      "High-RTO delivery pincode (50%)",
+      "High complaint history",
+      "Negative social signals",
+      "Brand new account"
+    ],
+    "risk_narrative": "Risk assessment based on transaction history and delivery signals.",
+    "recommendation": "Auto-Reject"
+  }
 }
 ```
 
-> **Note**: With valid `GEMINI_API_KEY`, `action_brief` contains rich LLM-generated narratives instead of fallback messages.
+
+
+#### 3. Altered Order Details (HTTP 409, no pipeline run)
+
+```bash
+curl -X POST http://localhost:8000/api/v1/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order_id": "ORD_000001",
+    "customer_id": "CUST_GOOD_01",
+    "order_value": 7000,
+    "category": "electronics",
+    "payment_method": "upi",
+    "delivery_pincode": "110001"
+  }'
+```
+
+```json
+{
+  "detail": {
+    "message": "Order details do not match the stored record",
+    "code": "ORDER_FIELD_MISMATCH",
+    "mismatches": [{ "field": "order_value", "expected": 2000.0, "actual": 7000.0 }]
+  }
+}
+```
 
 
 
@@ -379,71 +372,97 @@ curl -X POST http://localhost:8000/api/v1/analyze \
 curl -X POST http://localhost:8000/api/v1/verify-order \
   -H "Content-Type: application/json" \
   -d '{
-    "order_id": "ORD_123456",
-    "customer_id": "CUST_78901"
+    "order_id": "ORD_000001",
+    "customer_id": "CUST_GOOD_01"
   }'
 ```
 
-**Success Response** (200):
+**Success Response** (200, verified live output):
+
 ```json
 {
-  "order_id": "ORD_123456",
-  "customer_id": "CUST_78901",
-  "order_value": 8500.00,
-  "category": "fashion",
-  "payment_method": "cod",
-  "pincode": "560001",
-  "order_data": {}
+  "order_id": "ORD_000001",
+  "customer_id": "CUST_GOOD_01",
+  "order_value": 2000.0,
+  "category": "electronics",
+  "payment_method": "upi",
+  "pincode": "110001",
+  "order_data": {
+    "order_id": "ORD_000001",
+    "customer_id": "CUST_GOOD_01",
+    "order_value": 2000.0,
+    "category": "electronics",
+    "payment_method": "upi",
+    "pincode": "110001"
+  }
 }
 ```
 
-**Error Response** (400):
+**Mismatch Response** (409):
+
 ```json
 {
-  "detail": "Order ID ORD_123456 does not belong to customer CUST_78901"
+  "detail": {
+    "message": "Order ID ORD_000001 does not belong to customer CUST_SERIAL_01",
+    "code": "CUSTOMER_MISMATCH",
+    "mismatches": []
+  }
 }
 ```
 
-> **Use this endpoint** in the two-step web dashboard flow to validate order/customer before entering order details.
+> The two-step web flow calls this endpoint first, then submits the returned canonical values to `/analyze`.
+
 
 
 #### 4. Health Check
 
 ```bash
-curl http://localhost:8000/api/v1/health
+curl http://localhost:8000/health
 ```
 
 
 
-#### 5. Full Benchmark (takes ~30-60s)
+#### 5. Metrics and Benchmark (shared cached report)
 
 ```bash
+curl http://localhost:8000/api/v1/metrics
 curl http://localhost:8000/api/v1/benchmark
 ```
 
+`/metrics` returns the metric subset of the same cached report `/benchmark` returns in full (1h TTL, invalidated when dataset files change). Unavailable data returns HTTP 503 with a clear message — there are no mock fallbacks.
 
 
-### Analyze Response
+
+### Analyze Response Schema
 
 ```json
 {
-  "order_id": "ORD_123456",
-  "customer_id": "CUST_78901",
-  "risk_score": 72.0,
-  "recommendation": "Auto-Reject",
-  "confidence_score": 0.85,
+  "order_id": "ORD_000001",
+  "customer_id": "CUST_GOOD_01",
+  "company_name": "Good Customer Inc",
+  "risk_score": 0.0,
+  "recommendation": "Auto-Approve",
+  "confidence_score": 1.0,
+  "risk_data": {
+    "risk_score": 0.0,
+    "risk_factors": [],
+    "risk_narrative": "...",
+    "recommendation": "Auto-Approve"
+  },
   "action_brief": {
-    "order_summary": "Order #123456 for ₹8,500 (Fashion, COD)",
-    "risk_assessment": "High risk: Serial returner + COD + High-RTO pincode",
-    "market_context": "Festive season may increase RTO rates",
-    "mitigation_suggestions": ["Request partial prepayment", "Verify phone number"],
-    "key_concerns": ["Return rate: 80%", "Pincode RTO: 42%"],
-    "recommended_action": "Auto-Reject"
+    "order_summary": "...",
+    "risk_assessment": "...",
+    "market_context": "...",
+    "mitigation_suggestions": ["..."],
+    "key_concerns": ["..."],
+    "recommended_action": "Auto-Approve"
   },
   "audit_trail": [],
-  "processing_time_ms": 142
+  "processing_time_ms": 18
 }
 ```
+
+`risk_data` exposes public fields only (the internal rule bitmask is omitted). Confidence below 0.5 forces `recommended_action` to Manual Review regardless of score.
 
 
 
@@ -452,32 +471,18 @@ curl http://localhost:8000/api/v1/benchmark
 
 | Mode                                       | Latency        | Notes                         |
 | ------------------------------------------ | -------------- | ----------------------------- |
-| **Fast Mode (ENABLE_LLM_NARRATIVES=false)** | **~1-16ms**    | Deterministic pipeline only   |
-| **LLM Enabled (gemini-3.1-flash-lite)**    | **~2-3s**      | 15s timeout; rich narratives  |
-| **Cache Warm (2nd request same customer)** | **~2-5ms**     | Profile + Signal cached       |
-
+| **Fast Mode (ENABLE_LLM_NARRATIVES=false)** | **~ms**        | Deterministic pipeline only   |
+| **LLM Enabled (gemini-3.1-flash-lite)**    | **~2-30s**     | 15s timeout per LLM call; rich narratives |
+| **Cache Warm (repeat order)** | **identical output** | Score, confidence, action, and warnings match cold run |
 
 
 
 ### Caching Strategy
 
-- **Profile Cache**: 24hr TTL, keyed by `customer_id` (`{customer_id}_profile.json`)
-- **Signal Cache**: 24hr TTL, keyed by `customer_id + pincode` (`{customer_id}_{pincode}_signals.json`) — reads CSV fresh each request
-- **LLM Narrative Cache**: Not yet implemented (planned)
-
-
-
-### Latency Breakdown (Cold Start, Fast Mode)
-
-
-| Component                                | Time     |
-| ---------------------------------------- | -------- |
-| Profile Agent (CSV lookup + computation) | ~2ms     |
-| Signal Agent (CSV lookup + computation)  | ~2ms     |
-| Risk Agent (9 rule evaluations)          | ~1ms     |
-| Synthesis Agent (fallback template)      | ~1ms     |
-| **Total**                                | **~6ms** |
-
+- **Profile Cache**: 24hr TTL, versioned key `v1:{customer_id}_{order_id}_profile` — stores the data-phase confidence deduction and data warnings, reapplied on hits.
+- **Signal Cache**: 24hr TTL, versioned key `v1:{customer_id}_{order_id}_{pincode}_{category}_signals` — exact-order rows only, never another order's signals; deduction/warnings reapplied on hits.
+- **Benchmark Cache**: 1h TTL, process-local, invalidated on customers/orders/signals file changes; single-flight async lock.
+- **LLM Narrative Cache**: Not implemented.
 
 
 
@@ -485,14 +490,14 @@ curl http://localhost:8000/api/v1/benchmark
 
 The system includes a realistic data generator for development and benchmarking:
 
-- **500 customers** across 4 behavioral types:
-  - Good (60%): Low return rate (0-10%), 5-50 orders
-  - Occasional Returner (25%): Moderate return rate (10-30%), 3-30 orders
-  - Serial Returner (10%): High return rate (50-90%), 10-40 orders
-  - Fraudster (5%): Very high return rate (50-100%), 1-15 orders, often new accounts
-- **Orders**: Log-normal value distribution (₹500–25,000), category/payment/pincode distributions matching Indian e-commerce
-- **Signals**: Pincode RTO rates, category return rates, complaint scores, social sentiment, recent events
-- **Split**: 400 train / 100 held-out test customers with ground truth RTO labels
+- **505 customers** across 4 behavioral types (400 train / 105 test, incl. 5 predictable cases):
+  - Good: low return rate, established accounts
+  - Occasional Returner: moderate return rate (10-30%)
+  - Serial Returner: high return rate (50-90%)
+  - Fraudster: very high return rate, often new accounts
+- **Orders**: log-normal value distribution (₹500–25,000), category/payment/pincode distributions matching Indian e-commerce; reserved IDs `ORD_000001`–`ORD_000005` for predictable cases
+- **Signals**: exact-order rows (`customer_id` + `order_id`) with pincode RTO rates, category return rates, complaint scores, social sentiment, recent events; category-rate defaults apply on miss
+- **Split**: train/test customers with ground truth RTO labels; held-out test orders drive `/benchmark`
 
 
 
@@ -510,42 +515,60 @@ The system includes a realistic data generator for development and benchmarking:
 
 
 
+Flagged = score > 25 (Manual Review / Auto-Reject). Run `uv run python -m evaluation.benchmark` or `GET /api/v1/benchmark` for the measured report.
+
+
 
 ## Project Structure
 
 ```
 rto-risk-scorer/
 ├── agents/
-│   ├── profile_agent.py      # Transaction profile from history
-│   ├── signal_agent.py       # External signals (pincode, category, complaints)
-│   ├── risk_agent.py         # 9-rule deterministic scorer
-│   └── synthesis_agent.py    # Action brief with LLM narratives
+│   ├── profile_agent.py      # Transaction profile from history + order validation
+│   ├── signal_agent.py       # Exact-order external signals, category defaults
+│   ├── risk_agent.py         # 9-rule deterministic scorer + shared rule registry
+│   └── synthesis_agent.py    # Action brief with LLM narratives + deterministic override
 ├── api/
-│   └── routes.py             # FastAPI endpoints
+│   └── routes.py             # FastAPI endpoints (verify/analyze/test-cases/metrics/benchmark)
 ├── core/
-│   ├── state.py              # TypedDict SystemState
-│   ├── orchestrator.py       # LangGraph pipeline
-│   ├── cache.py              # File-based cache (24hr TTL)
+│   ├── state.py              # TypedDict SystemState (plain error list, unique-append)
+│   ├── orchestrator.py       # LangGraph pipeline (async primary, sync wrapper)
+│   ├── orders.py             # Shared order/customer/signal repository + 409 checks
+│   ├── cache.py              # File-based cache (24hr TTL, atomic writes, file locking)
 │   ├── config.py             # Pydantic Settings
 │   └── clients.py            # Singleton HTTP/Gemini clients
 ├── synthetic_data/
-│   ├── generator.py          # Data generator
+│   ├── generator.py          # Data generator (80/20 split; 400/100 for 500)
 │   ├── customers.csv
 │   ├── orders.csv
 │   └── signals.csv
 ├── evaluation/
-│   ├── metrics.py            # Precision/Recall/F1/FPR
-│   └── benchmark.py          # Full benchmark runner
+│   ├── metrics.py            # Precision/Recall/F1/FPR (no mock fallbacks)
+│   ├── benchmark.py          # Async full benchmark runner
+│   └── service.py            # Shared cached benchmark service (1h TTL, single-flight)
+├── frontend/
+│   ├── index.html            # User page (/)
+│   ├── dev.html              # Developer console (/dev)
+│   ├── shared.js             # Shared verify/analyze/render flow
+│   ├── app.js                # User page wiring
+│   ├── dev.js                # Dev console wiring (test cases, metrics, viewer)
+│   └── styles.css
 ├── tests/
+│   ├── conftest.py           # LLM off + tmp-path dataset isolation fixtures
 │   ├── test_profile_agent.py
 │   ├── test_signal_agent.py
 │   ├── test_risk_agent.py
 │   ├── test_synthesis_agent.py
-│   └── test_pipeline_integration.py
-├── main.py                   # FastAPI entry point
-├── pyproject.toml
+│   ├── test_pipeline_integration.py
+│   └── test_evaluation.py
+├── main.py                   # FastAPI entry point (/ and /dev routes)
+├── start.sh                  # Container startup (data check + uvicorn on $PORT)
+├── pyproject.toml            # Python >=3.11,<3.13
+├── mypy.ini                  # Mypy config (valid INI)
+├── Dockerfile                # Builds + generates full dataset in-image
 ├── docker-compose.yml
-├── Dockerfile
+├── render.yaml               # Render blueprint (LLM narratives off)
+├── .github/workflows/ci.yml # CI: Python 3.11/3.12 × ruff/mypy/JS/pytest + route smoke
 └── .env.example
 ```
 
@@ -554,41 +577,31 @@ rto-risk-scorer/
 ## Testing
 
 ```bash
-# Run all tests
-uv run pytest tests/ -v
+# Run all tests (81 tests; datasets generate under tmp_path, tracked CSVs untouched)
+uv run pytest tests/ -q
 
 # Run specific agent tests
 uv run pytest tests/test_risk_agent.py -v
 uv run pytest tests/test_signal_agent.py -v
 uv run pytest tests/test_pipeline_integration.py -v
+
+# Lint, types, JS
+uv run ruff check .
+uv run mypy --config-file mypy.ini agents/ core/ api/ synthetic_data/ evaluation/ main.py
+node --check frontend/shared.js frontend/app.js frontend/dev.js
 ```
 
 
 
-## Web Dashboard
+## Web Frontend
 
-The built-in frontend provides a real-time risk assessment UI with a **two-step verification flow**:
+Two routes served by FastAPI (`/` and `/dev`), sharing `frontend/shared.js`:
 
-**Access**: [http://localhost:8000](http://localhost:8000) (after starting server)
+**User page** (`/`): Step 1 (Order ID + Customer ID → Verify & Continue) → Step 2 (verified canonical values, read-only) → Analyze Risk → score badge, recommendation, confidence bar, risk factors, narrative, brief sections, audit trail, processing time. 409/422 failures render as readable messages.
 
-**Two-Step Flow**:
-1. **Step 1 - Verify**: Enter Order ID + Customer ID → Click "Verify & Continue"
-   - Validates order/customer match against database
-   - Shows error modal if mismatch
-2. **Step 2 - Analyze**: Shows verified order details (read-only) + editable fields for remaining inputs
-   - Click "Analyze Risk" to get risk assessment
+**Developer console** (`/dev`): same flow plus test-case picker with expected-vs-actual badge, endpoint list, live metrics and benchmark panels, and a raw request/response viewer.
 
-**Features**:
-- Order/Customer ID verification against database
-- Live risk score with color-coded badge (Green/Yellow/Red)
-- Recommendation badge (Auto-Approve / Manual Review / Auto-Reject)
-- Confidence progress bar
-- Expandable sections: Order Summary, Risk Assessment, Market Context, Key Concerns, Mitigations, Audit Trail
-- Processing time display
-- Test case dropdown for quick testing
-- Modal popup for validation errors (order/customer mismatch, field mismatches)
-
-**Architecture**: Static files served via FastAPI at `/static/`, API calls to `/api/v1/verify-order` and `/api/v1/analyze`
+**Architecture**: Static files served at `/static/`; API calls to `/api/v1/verify-order` and `/api/v1/analyze`.
 
 ---
 
@@ -604,6 +617,12 @@ The built-in frontend provides a real-time risk assessment UI with a **two-step 
 docker-compose up --build
 ```
 
+The image (`python:3.11-slim`) installs dependencies, generates the full 500-customer dataset at build time (no data volume required), and starts via `start.sh` (uvicorn on `${PORT:-8000}`). Healthcheck uses the Python standard library. `docker-compose.yml` mounts only `./cache`.
+
+### Render
+
+`render.yaml` defines the Docker web service with health check path `/health` and `ENABLE_LLM_NARRATIVES=false`. Set `GEMINI_API_KEY` in the Render dashboard (never in the repo) — only after rotating the previously exposed credentials.
+
 
 
 ## Design Decisions
@@ -612,13 +631,16 @@ docker-compose up --build
 | Decision                          | Rationale                                                                     |
 | --------------------------------- | ----------------------------------------------------------------------------- |
 | TypedDict over Pydantic for state | Lightweight, mutable, JSON-serializable; idiomatic for LangGraph              |
-| `operator.add` on errors          | LangGraph reducer pattern — each agent appends, never overwrites              |
+| Plain error list, unique-append   | Sequential agents carry the full list; no reducer duplication on retry/cache-hit |
+| 409 gate before scoring           | Altered order details are rejected, never scored; canonical values only       |
+| Order-scoped signals              | Exact `customer_id + order_id` rows with pincode check; no cross-order reuse  |
+| Versioned cache + deduction reapply | Cold and warm requests return identical confidence and warnings             |
 | Sequential execution              | Data dependencies: Signal needs Profile; Risk needs both; Synthesis needs all |
 | File-based cache (24hr TTL)       | Eliminates repeated DB/API calls; atomic writes with `os.replace()`           |
 | Deterministic risk scoring        | Reproducible, auditable, no LLM hallucination on money decisions              |
 | Confidence scoring                | Quantified reliability — merchants know when to trust auto-decisions          |
 | LLM for narratives only           | Prevents hallucination on quantitative decisions                              |
-
+| Benchmark single-flight cache     | One real computation shared by `/metrics` and `/benchmark`; file-change invalidation |
 
 
 

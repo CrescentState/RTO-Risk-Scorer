@@ -24,6 +24,19 @@ jobs:
       - name: Mypy
         run: mypy --config-file mypy.ini agents/ core/ api/ synthetic_data/ evaluation/ main.py
       - name: JavaScript syntax check
-        run: node --check frontend/app.js
+        run: node --check frontend/shared.js && node --check frontend/app.js && node --check frontend/dev.js
       - name: Pytest
         run: pytest tests/ -q
+      - name: Route smoke test
+        run: |
+          ENABLE_LLM_NARRATIVES=false python -m uvicorn main:app --host 127.0.0.1 --port 8000 &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/health && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:8000/ | grep -q 'Order Analysis'
+          curl -sf http://127.0.0.1:8000/dev | grep -q 'Developer Tools'
+          curl -sf http://127.0.0.1:8000/health
+          curl -sf http://127.0.0.1:8000/api/v1/test-cases | grep -q 'CUST_GOOD_01'
+          kill $SERVER_PID
